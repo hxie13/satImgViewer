@@ -1,0 +1,11 @@
+PyQt6
+satpy
+cartopy
+matplotlib
+numpy
+xarray
+pyresample
+pyproj
+pillow
+gdal
+opencv-python
