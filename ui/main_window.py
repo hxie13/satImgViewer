@@ -12,7 +12,7 @@ from core.projections import get_available_projections
 from ui.canvas import GeoCanvas
 from ui.globe_canvas import Globe3DCanvas  # 确保你有这个文件
 from ui.widgets import DraggableList, BandDropZone
-from utils.workers import ImageLoaderWorker
+from utils.workers import ImageLoaderWorker, VideoExportWorker # 导入新的 Worker
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -25,6 +25,10 @@ class MainWindow(QMainWindow):
         
         self.cached_img = None
         self.cached_extent = None
+        # [新增] 播放器状态
+        self.file_groups = []       # 所有时间切片 [[t0_files], [t1_files], ...]
+        self.current_frame_index = -1
+
         self.init_ui()
 
     def init_ui(self):
@@ -37,6 +41,41 @@ class MainWindow(QMainWindow):
         control_panel = QWidget()
         control_layout = QVBoxLayout(control_panel)
         control_panel.setFixedWidth(320)
+
+        # [新增] --- 播放控制区 (添加到左侧面板底部) ---
+        gb_player = QGroupBox("Time Series Player")
+        vbox_player = QVBoxLayout()
+        
+        # 时间显示
+        self.lbl_time = QLabel("Time: N/A")
+        self.lbl_time.setStyleSheet("font-size: 14px; font-weight: bold; color: #00e5ff;")
+        self.lbl_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        vbox_player.addWidget(self.lbl_time)
+        
+        # 进度条
+        self.slider_time = QSlider(Qt.Orientation.Horizontal)
+        self.slider_time.setEnabled(False)
+        self.slider_time.valueChanged.connect(self.on_slider_move)
+        vbox_player.addWidget(self.slider_time)
+        
+        # 按钮组
+        hbox_btns = QHBoxLayout()
+        self.btn_prev = QPushButton("◀")
+        self.btn_next = QPushButton("▶")
+        self.btn_prev.clicked.connect(self.prev_frame)
+        self.btn_next.clicked.connect(self.next_frame)
+        
+        self.btn_video = QPushButton("Export Video")
+        self.btn_video.setStyleSheet("background-color: #d81b60;") # 醒目的颜色
+        self.btn_video.clicked.connect(self.export_video_sequence)
+        
+        hbox_btns.addWidget(self.btn_prev)
+        hbox_btns.addWidget(self.btn_video)
+        hbox_btns.addWidget(self.btn_next)
+        vbox_player.addLayout(hbox_btns)
+        
+        gb_player.setLayout(vbox_player)
+        control_layout.addWidget(gb_player) # 添加到左侧面板
 
         # A. 文件加载
         btn_load = QPushButton("Load Data Folder")
@@ -135,24 +174,118 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Data Folder")
         if not folder: return
         
-        # 简单的文件扫描逻辑
-        import os
-        supported_exts = ('.nc', '.dat', '.h5', '.hdf', '.bz2')
-        valid_files = []
-        try:
-            for f in os.listdir(folder):
-                full_path = os.path.join(folder, f)
-                if os.path.isfile(full_path) and f.lower().endswith(supported_exts):
-                    valid_files.append(full_path)
-        except OSError:
+        self.statusBar().showMessage("Scanning folder...")
+        
+        # 1. 扫描并分组
+        groups = self.driver.scan_and_group_files(folder)
+        
+        if not groups:
+            QMessageBox.warning(self, "Error", "No supported satellite files found.")
+            return
+            
+        self.file_groups = groups
+        self.current_frame_index = 0
+        
+        # 2. 更新 UI 状态
+        self.slider_time.setRange(0, len(groups) - 1)
+        self.slider_time.setValue(0)
+        self.slider_time.setEnabled(True)
+        self.statusBar().showMessage(f"Found {len(groups)} time frames.")
+        
+        # 3. 加载第一帧 (仅加载 Scene 元数据，不渲染图像)
+        self.load_frame(0)
+
+    # [新增] 加载特定帧
+    def load_frame(self, index):
+        if not self.file_groups or index < 0 or index >= len(self.file_groups):
+            return
+            
+        files = self.file_groups[index]
+        self.current_frame_index = index
+        
+        # 暂时阻塞信号防止滑块循环调用
+        self.slider_time.blockSignals(True)
+        self.slider_time.setValue(index)
+        self.slider_time.blockSignals(False)
+        
+        # 调用 Driver 加载 Scene 元数据
+        if self.driver.load_scene(files):
+            # 更新波段列表 (仅第一次或波段变化时)
+            if self.band_list.count() == 0:
+                bands = self.driver.get_available_datasets()
+                self.band_list.clear()
+                self.band_list.addItems(sorted(bands))
+            
+            # 更新时间标签
+            meta = self.driver.get_metadata()
+            time_str = meta.get('start_time', 'Unknown')
+            self.lbl_time.setText(f"{time_str}\n[{index+1}/{len(self.file_groups)}]")
+            
+            # 自动刷新视图 (如果已经选了波段)
+            # 检查是否有选中的波段，如果有，自动触发 run_process
+            r, g, b = self.drop_r.text(), self.drop_g.text(), self.drop_b.text()
+            if r and g and b:
+                self.run_process() # 重新生成当前视角的图像
+            
+        else:
+            self.statusBar().showMessage(f"Failed to load frame {index}")
+
+    # [新增] 导航槽函数
+    def prev_frame(self):
+        if self.current_frame_index > 0:
+            self.load_frame(self.current_frame_index - 1)
+
+    def next_frame(self):
+        if self.current_frame_index < len(self.file_groups) - 1:
+            self.load_frame(self.current_frame_index + 1)
+
+    def on_slider_move(self, value):
+        # 只有当松开鼠标或者点击时才加载，防止滑动过快卡死
+        # 这里简单处理，直接加载
+        if value != self.current_frame_index:
+            self.load_frame(value)
+
+    # [新增] 视频导出逻辑
+    def export_video_sequence(self):
+        if not self.file_groups: return
+        
+        # 获取当前波段设置
+        r, g, b = self.drop_r.text(), self.drop_g.text(), self.drop_b.text()
+        bands = []
+        if r and g and b: bands = [r, g, b]
+        else: 
+            QMessageBox.info(self, "Info", "Please setup RGB bands first.")
             return
 
-        if not valid_files:
-            QMessageBox.warning(self, "Error", "No valid satellite files found.")
-            return
+        # 选择保存路径
+        output_file, _ = QFileDialog.getSaveFileName(self, "Save Video", "", "MP4 Video (*.mp4)")
+        if not output_file: return
+        
+        # 准备参数
+        proj_id = self.combo_proj.currentData()
+        params = {
+            'gamma': self.current_gamma,
+            'proj_name': proj_id
+        }
+        
+        # 启动视频工作线程
+        self.vid_worker = VideoExportWorker(self.driver, self.file_groups, output_file, bands, params)
+        self.vid_worker.progress.connect(self.on_video_progress)
+        self.vid_worker.finished.connect(self.on_video_finished)
+        self.vid_worker.error.connect(self.on_worker_error)
+        
+        # 禁用界面防止冲突
+        self.setEnabled(False)
+        self.statusBar().showMessage("Exporting video... This may take a while.")
+        self.vid_worker.start()
+    
+    def on_video_progress(self, current, total):
+        self.statusBar().showMessage(f"Exporting Video: Frame {current}/{total}...")
 
-        self.statusBar().showMessage("Loading metadata... please wait.")
-        QTimer.singleShot(100, lambda: self._execute_driver_load(valid_files))
+    def on_video_finished(self, path):
+        self.setEnabled(True)
+        self.statusBar().showMessage("Video Export Complete!")
+        QMessageBox.information(self, "Success", f"Video saved to:\n{path}")
 
     def _execute_driver_load(self, files):
         if self.driver.load_scene(files):

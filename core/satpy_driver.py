@@ -95,6 +95,56 @@ class SatpyDriver(ISatelliteDataProvider):
         
         return file_groups
 
+    def scan_and_group_files(self, folder_path: str) -> list:
+        """
+        扫描文件夹，按时间戳将文件分组。
+        返回: list of lists (e.g. [[f1_t0.nc], [f1_t1.nc], [seg1_t2.dat, seg2_t2.dat...]])
+        """
+        import glob
+        
+        # 支持的后缀
+        exts = ['*.nc', '*.NC', '*.dat', '*.DAT', '*.bz2', '*.h5', '*.HDF']
+        all_files = []
+        for ext in exts:
+            all_files.extend(glob.glob(os.path.join(folder_path, ext)))
+        
+        if not all_files:
+            return []
+
+        # 简单的分组逻辑：
+        # 1. 如果是 .dat (葵花原数据)，通常包含 _S0110_, _S0210_ 等段标记，需要按时间聚合
+        # 2. 如果是 .nc (L1/L2)，通常一个文件就是一个时刻
+        
+        # 这里使用一个通用的正则提取时间数字 (YYYYMMDD_HHMM 或类似结构)
+        # 如果文件名中包含连续的12-14位数字，通常是时间戳
+        groups = {}
+        
+        # 针对葵花 HSD 数据的特殊正则 (例如 HS_H08_20230101_0300_...)
+        hsd_pattern = re.compile(r'(\d{8}_\d{4})') 
+        # 通用数字提取
+        generic_pattern = re.compile(r'(\d{12,14})')
+
+        for f in sorted(all_files):
+            basename = os.path.basename(f)
+            
+            # 尝试匹配时间特征
+            match = hsd_pattern.search(basename)
+            if not match:
+                match = generic_pattern.search(basename)
+            
+            if match:
+                key = match.group(1) # 使用时间字符串作为 Key
+            else:
+                key = basename # 匹配不到时间，就单独一组
+
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(f)
+        
+        # 按时间 Key 排序并转换为列表
+        sorted_groups = [groups[k] for k in sorted(groups.keys())]
+        return sorted_groups
+
     def load_scene(self, file_paths: list):
         """
         Load scenes from multiple files, grouping them by type if necessary.
