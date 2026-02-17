@@ -11,6 +11,8 @@ from .image_proc import ImageProcessor
 from .projections import get_projection_config, create_target_area, get_available_projections
 from .satellite_projection import get_satellite_coverage
 from .calibration import Calibration, GLTCorrection, RegionCropper, Resampler, GeoTIFFWriter
+from .file_scanner import detect_reader_for_file, group_files_by_reader, scan_and_group_files
+from .models import ExportResult
 try:
     from PIL import Image
 except Exception:
@@ -55,95 +57,16 @@ class SatpyDriver(ISatelliteDataProvider):
         return 'ahi_hsd'
     
     def _detect_reader_for_file(self, file_path: str) -> str:
-        """
-        Detect the appropriate reader for a single file based on its name and extension.
-        """
-        filename = os.path.basename(file_path)
-        name_upper = filename.upper()
-        _, ext = os.path.splitext(filename)
-        ext = ext.lower()
-
-        if 'FY4A' in name_upper or 'FY-4A' in name_upper:
-            return 'agri_fy4a'
-        if 'FY4B' in name_upper or 'FY-4B' in name_upper:
-            if 'L2' in name_upper:
-                return 'satpy_cf_nc'
-            return 'agri_fy4b'
-
-        if 'H08' in name_upper or 'H09' in name_upper or 'HIMAWARI' in name_upper:
-            if ext == '.dat' or ext == '.bz2':
-                return 'ahi_hsd'
-            if ext == '.nc':
-                return 'ahi_l1b_gridded'
-
-        if ext == '.nc':
-             return 'generic_image'
-        return 'ahi_hsd'
+        """Detect the appropriate reader for a single file."""
+        return detect_reader_for_file(file_path)
     
     def group_files_by_type(self, file_paths: list) -> dict:
-        """
-        Group files by their detected type.
-        Returns a dictionary where keys are reader types and values are lists of files.
-        """
-        file_groups = {}
-        
-        for file_path in file_paths:
-            reader = self._detect_reader_for_file(file_path)
-            if reader not in file_groups:
-                file_groups[reader] = []
-            file_groups[reader].append(file_path)
-        
-        return file_groups
+        """Group files by detected reader type."""
+        return group_files_by_reader(file_paths)
 
     def scan_and_group_files(self, folder_path: str) -> list:
-        """
-        扫描文件夹，按时间戳将文件分组。
-        返回: list of lists (e.g. [[f1_t0.nc], [f1_t1.nc], [seg1_t2.dat, seg2_t2.dat...]])
-        """
-        import glob
-        
-        # 支持的后缀
-        exts = ['*.nc', '*.NC', '*.dat', '*.DAT', '*.bz2', '*.h5', '*.HDF']
-        all_files = []
-        for ext in exts:
-            all_files.extend(glob.glob(os.path.join(folder_path, ext)))
-        
-        if not all_files:
-            return []
-
-        # 简单的分组逻辑：
-        # 1. 如果是 .dat (葵花原数据)，通常包含 _S0110_, _S0210_ 等段标记，需要按时间聚合
-        # 2. 如果是 .nc (L1/L2)，通常一个文件就是一个时刻
-        
-        # 这里使用一个通用的正则提取时间数字 (YYYYMMDD_HHMM 或类似结构)
-        # 如果文件名中包含连续的12-14位数字，通常是时间戳
-        groups = {}
-        
-        # 针对葵花 HSD 数据的特殊正则 (例如 HS_H08_20230101_0300_...)
-        hsd_pattern = re.compile(r'(\d{8}_\d{4})') 
-        # 通用数字提取
-        generic_pattern = re.compile(r'(\d{12,14})')
-
-        for f in sorted(all_files):
-            basename = os.path.basename(f)
-            
-            # 尝试匹配时间特征
-            match = hsd_pattern.search(basename)
-            if not match:
-                match = generic_pattern.search(basename)
-            
-            if match:
-                key = match.group(1) # 使用时间字符串作为 Key
-            else:
-                key = basename # 匹配不到时间，就单独一组
-
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(f)
-        
-        # 按时间 Key 排序并转换为列表
-        sorted_groups = [groups[k] for k in sorted(groups.keys())]
-        return sorted_groups
+        """扫描文件夹，按时间戳将文件分组。"""
+        return scan_and_group_files(folder_path)
 
     def load_scene(self, file_paths: list):
         """
@@ -544,6 +467,7 @@ class SatpyDriver(ISatelliteDataProvider):
         gc.collect()
 
         try:
+            start_t = time.time()
             # 2. 加载波段
             real_bands = [self.dataset_map.get(b, b) for b in bands]
             self.scn.load(real_bands)
@@ -639,7 +563,9 @@ class SatpyDriver(ISatelliteDataProvider):
 
             del band_data, local_scn
             gc.collect()
-            return {'status': 'success', 'path': output_path}
+            elapsed = time.time() - start_t
+            result = ExportResult(status='success', path=output_path, time_s=elapsed)
+            return {'status': result.status, 'path': result.path, 'time_s': result.time_s}
 
         except Exception as e:
             print(f"Export error: {e}")

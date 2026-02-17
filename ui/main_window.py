@@ -272,7 +272,7 @@ class MainWindow(QMainWindow):
         self.vid_worker = VideoExportWorker(self.driver, self.file_groups, output_file, bands, params)
         self.vid_worker.progress.connect(self.on_video_progress)
         self.vid_worker.finished.connect(self.on_video_finished)
-        self.vid_worker.error.connect(self.on_worker_error)
+        self.vid_worker.error.connect(self.on_video_error)
         
         # 禁用界面防止冲突
         self.setEnabled(False)
@@ -286,6 +286,11 @@ class MainWindow(QMainWindow):
         self.setEnabled(True)
         self.statusBar().showMessage("Video Export Complete!")
         QMessageBox.information(self, "Success", f"Video saved to:\n{path}")
+
+    def on_video_error(self, message: str):
+        self.setEnabled(True)
+        self.statusBar().showMessage("Video export failed")
+        QMessageBox.critical(self, "Video Export Error", f"Failed to export video:\n{message}")
 
     def _execute_driver_load(self, files):
         if self.driver.load_scene(files):
@@ -433,7 +438,9 @@ class MainWindow(QMainWindow):
                 resample_method='nearest'  # Default resample method
             )
             
-            msg = f"Export successful: {output_path}\nProjection: {proj_name}\nTime: {result['time_s']:.2f}s"
+            time_s = result.get('time_s')
+            time_msg = f"{time_s:.2f}s" if isinstance(time_s, (int, float)) else "N/A"
+            msg = f"Export successful: {output_path}\nProjection: {proj_name}\nTime: {time_msg}"
             self.statusBar().showMessage("Export complete!")
             QMessageBox.information(self, "Export Success", msg)
         
