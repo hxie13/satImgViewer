@@ -175,10 +175,10 @@ class MainWindow(QMainWindow):
         self.band_list_widget.currentItemChanged.connect(lambda *_: self._sync_action_states())
         gb_bands_layout.addWidget(self.band_list_widget, 1)
 
-        for ch_letter, ch_placeholder, attr in [
-            ("R", "Red (e.g. B13)",   "drop_r"),
-            ("G", "Green (e.g. B12)", "drop_g"),
-            ("B", "Blue (e.g. B09)",  "drop_b"),
+        for ch_letter, ch_placeholder, drop_attr, btn_attr in [
+            ("R", "Red (e.g. B13)",   "red_drop_zone", "clear_red_button"),
+            ("G", "Green (e.g. B12)", "green_drop_zone", "clear_green_button"),
+            ("B", "Blue (e.g. B09)",  "blue_drop_zone", "clear_blue_button"),
         ]:
             row = QHBoxLayout()
             row.setSpacing(4)
@@ -188,12 +188,12 @@ class MainWindow(QMainWindow):
             lbl.setFixedWidth(14)
             drop = BandDropZone(ch_placeholder, channel=ch_letter)
             drop.textChanged.connect(self._sync_action_states)
-            setattr(self, attr, drop)
+            setattr(self, drop_attr, drop)
             btn_clr = QPushButton("×")
             btn_clr.setProperty("role", "clear_band")
             btn_clr.setToolTip(f"Clear {ch_letter} channel")
             btn_clr.clicked.connect(drop.clear_band)
-            setattr(self, f"btn_clear_{ch_letter.lower()}", btn_clr)
+            setattr(self, btn_attr, btn_clr)
             row.addWidget(lbl)
             row.addWidget(drop, 1)
             row.addWidget(btn_clr)
