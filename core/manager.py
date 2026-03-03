@@ -361,7 +361,8 @@ class SatelliteImageManager:
             Tuple of (image_array, area_definition)
         """
         if not self.is_loaded:
-            raise ValueError("No data loaded")
+            from .exceptions import SatDataLoadError
+            raise SatDataLoadError("No satellite data is currently loaded. Please load data first.")
 
         t0 = time.perf_counter()
         with self._lock:

@@ -558,6 +558,11 @@ def get_band_display_name(canonical_name: str, satellite_id: Optional[str] = Non
 # Single source of truth for satellite-native dataset names.
 # Each driver imports from here instead of maintaining its own inline dict.
 # Format per band entry: {'name': <native_name>, 'wavelength': <str>, 'resolution': <str>}
+#
+# Usage:
+#   from core.config import get_satellite_band_map, get_thermal_bands
+#   bands = get_satellite_band_map('AGRI_L1')  # Returns dict of band configs
+#   thermal = get_thermal_bands('MERSI_L1')    # Returns set of thermal band names
 # =============================================================================
 
 SATELLITE_BAND_MAPS: Dict[str, Dict[str, Dict]] = {
