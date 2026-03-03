@@ -1,0 +1,44 @@
+# satImgViewer Full Dependencies
+# Install with: pip install -r requirements_full.txt
+# Or use conda: conda install -c conda-forge --file requirements_full.txt
+
+# Core UI
+PyQt6>=6.5
+
+# Satellite data processing (Full installation)
+satpy>=0.48
+h5netcdf>=1.0.0
+netCDF4>=1.6.0
+
+# Geospatial processing
+cartopy>=0.22
+pyproj>=3.6
+pyresample>=1.28
+
+# Array computation
+numpy>=1.24
+xarray>=2023.1
+scipy>=1.11
+
+# Visualization
+matplotlib>=3.8
+vispy>=0.14
+pillow>=10.0
+
+# Parallel processing
+dask>=2024.1
+distributed>=2024.1
+
+# HDF5 support
+h5py>=3.10
+
+# Image/Video processing
+opencv-python>=4.8
+gdal>=3.6
+
+# Optional performance boosters
+# Uncomment if needed:
+# zarr>=2.16.0  # For chunked array storage
+# fsspec>=2023.0  # For remote file access
+# s3fs>=2023.0  # For S3 access
+# gcsfs>=2023.0  # For Google Cloud Storage
