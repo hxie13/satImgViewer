@@ -14,6 +14,7 @@ from .polar_base import BasePolarDriver
 from .fengyun import FengYunDriver
 from .fengyun3d import FengYun3DDriver
 from .himawari import HimawariDriver
+from ..file_recognizer import FileTypeRecognizer, get_recommended_reader
 
 logger = logging.getLogger(__name__)
 
@@ -178,13 +179,15 @@ class DriverFactory:
 
     @classmethod
     def create_from_files(cls, file_paths: List[str],
-                          auto_detect: bool = True) -> BaseSatelliteDriver:
+                          auto_detect: bool = True,
+                          preferred_reader: Optional[str] = None) -> BaseSatelliteDriver:
         """
         Create appropriate driver by analyzing files.
 
         Args:
             file_paths: List of file paths
             auto_detect: If True, automatically identify satellite type
+            preferred_reader: Optional direct reader recommendation from FileTypeRecognizer
 
         Returns:
             Configured driver instance
@@ -195,6 +198,19 @@ class DriverFactory:
         if not file_paths:
             raise ValueError("No file paths provided")
 
+        if preferred_reader and preferred_reader != "auto":
+            # Use smart file recognizer result
+            logger.info(f"Using FileTypeRecognizer recommendation: {preferred_reader}")
+            
+            # Determine driver type from reader name
+            driver_type = cls._reader_to_driver_type(preferred_reader)
+            if driver_type:
+                driver = cls.create_driver(driver_type)
+                # Pass reader hint to driver
+                if hasattr(driver, '_set_preferred_reader'):
+                    driver._set_preferred_reader(preferred_reader)
+                return driver
+        
         if auto_detect:
             file_info_list = cls.identify_files(file_paths)
 
@@ -222,6 +238,54 @@ class DriverFactory:
             if not file_info.driver_type:
                 raise ValueError("Cannot determine satellite type")
             return cls.create_driver(file_info.driver_type)
+    
+    @classmethod
+    def _reader_to_driver_type(cls, reader_name: str) -> Optional[str]:
+        """
+        Map reader name to driver type.
+        
+        Args:
+            reader_name: Satpy reader name (e.g., 'agri_fy4b')
+            
+        Returns:
+            Driver type key or None
+        """
+        reader_map = {
+            'agri_fy4b': 'fengyun',
+            'agri_fy4a': 'fengyun',
+            'ahi_hsd': 'himawari',
+            'ahi_l1b_gridded': 'himawari',
+            'mersi2_l1b': 'fengyun3d',
+            'mersi_l1b': 'fengyun3d',
+        }
+        return reader_map.get(reader_name)
+    
+    @classmethod
+    def create_with_smart_recognition(cls, file_paths: List[str]) -> BaseSatelliteDriver:
+        """
+        Create driver using smart file type recognition.
+        
+        This method uses FileTypeRecognizer to directly map filenames to readers,
+        eliminating the trial-and-error fallback chain.
+        
+        Args:
+            file_paths: List of file paths
+            
+        Returns:
+            Configured driver instance with preferred reader hint
+        """
+        if not file_paths:
+            raise ValueError("No file paths provided")
+        
+        # Use smart recognizer
+        recommended_reader = get_recommended_reader(file_paths)
+        
+        if recommended_reader:
+            logger.info(f"[SmartRecognition] Direct reader match: {recommended_reader}")
+            return cls.create_from_files(file_paths, preferred_reader=recommended_reader)
+        else:
+            logger.warning("[SmartRecognition] No direct match, falling back to auto-detection")
+            return cls.create_from_files(file_paths, auto_detect=True)
 
     @classmethod
     def get_available_drivers(cls) -> List[str]:

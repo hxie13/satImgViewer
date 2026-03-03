@@ -19,6 +19,7 @@ from .drivers.base import SatelliteFileInfo, ProcessingParams
 from .geometry import ProjectionFactory, ProjectionType
 from .pipelines import RGBCompositorFactory, EnhancementPipeline
 from .config import get_satellite_config, get_band_display_name
+from .file_recognizer import FileTypeRecognizer, get_recommended_reader
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +188,15 @@ class SatelliteImageManager:
                         self._driver = DriverFactory.create_driver(requested_type)
                         self._driver_type = requested_type
                     else:
+                        # Use smart file recognition for direct reader mapping
+                        recommended_reader = get_recommended_reader(file_paths)
+                        if recommended_reader:
+                            self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_reader}")
+                        
                         self._driver = DriverFactory.create_from_files(
-                            file_paths, auto_detect=auto_detect
+                            file_paths, 
+                            auto_detect=auto_detect,
+                            preferred_reader=recommended_reader
                         )
                         self._driver_type = self._infer_current_driver_type()
                 elif self._driver_type is None:

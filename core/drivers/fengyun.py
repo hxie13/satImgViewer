@@ -87,6 +87,16 @@ class FengYunDriver(BaseSatelliteDriver):
         self._satpy = None
         self._scenes: List = []
         self._loaded_reader: Optional[str] = None   # cache for dataset-map reuse
+        self._preferred_reader: Optional[str] = None  # Direct reader recommendation
+
+    def _set_preferred_reader(self, reader: str) -> None:
+        """
+        Set preferred reader from FileTypeRecognizer.
+        
+        This bypasses the trial-and-error reader detection.
+        """
+        self._preferred_reader = reader
+        logger.info(f"[FengYunDriver] Preferred reader set: {reader}")
 
     def _init_driver(self) -> None:
         """Initialize driver-specific resources."""
@@ -294,10 +304,6 @@ class FengYunDriver(BaseSatelliteDriver):
             self._current_level = self._detect_product_level(file_paths)
             logger.info(f"Detected product level: {self._current_level.value}")
 
-            # Detect reader
-            reader_name = self._detect_reader(file_paths)
-            logger.info(f"Using reader: {reader_name}")
-
             # Group files by time
             time_groups = self._group_files_by_time(file_paths)
             logger.info(f"Found {len(time_groups)} time groups")
@@ -310,30 +316,52 @@ class FengYunDriver(BaseSatelliteDriver):
             primary_time = next(iter(time_groups.keys()))
             primary_files = time_groups[primary_time]
 
-            # Try to create scene with primary reader, with fallback
-            reader_fallbacks = [reader_name]
-            if reader_name == 'agri_fy4b':
-                reader_fallbacks = ['agri_fy4a', 'generic_image', 'satpy_cf_nc']
-            elif reader_name == 'agri_fy4a':
-                reader_fallbacks = ['generic_image']
-
+            # Determine reader to use - prioritize preferred reader from FileTypeRecognizer
             scene = None
             used_reader = None
-
-            for reader in reader_fallbacks:
+            
+            if self._preferred_reader:
+                # Use FileTypeRecognizer recommendation directly (fast path)
+                logger.info(f"[FastPath] Using FileTypeRecognizer recommendation: {self._preferred_reader}")
                 try:
-                    logger.info(f"Trying reader: {reader}")
                     scene = self._satpy.Scene(
-                        reader=reader,
+                        reader=self._preferred_reader,
                         filenames=primary_files
                     )
                     if scene.available_dataset_names():
-                        used_reader = reader
-                        logger.info(f"Success with reader: {reader}")
-                        break
+                        used_reader = self._preferred_reader
+                        logger.info(f"[FastPath] Success with preferred reader: {used_reader}")
                 except Exception as e:
-                    logger.warning(f"Reader {reader} failed: {e}")
-                    continue
+                    logger.warning(f"[FastPath] Preferred reader {self._preferred_reader} failed: {e}")
+                    # Clear preferred reader and fall back to detection
+                    self._preferred_reader = None
+            
+            if scene is None:
+                # Fall back to traditional reader detection with fallback chain
+                reader_name = self._detect_reader(file_paths)
+                logger.info(f"Using detected reader: {reader_name}")
+
+                # Build fallback chain
+                reader_fallbacks = [reader_name]
+                if reader_name == 'agri_fy4b':
+                    reader_fallbacks = ['agri_fy4a', 'generic_image', 'satpy_cf_nc']
+                elif reader_name == 'agri_fy4a':
+                    reader_fallbacks = ['generic_image']
+
+                for reader in reader_fallbacks:
+                    try:
+                        logger.info(f"Trying reader: {reader}")
+                        scene = self._satpy.Scene(
+                            reader=reader,
+                            filenames=primary_files
+                        )
+                        if scene.available_dataset_names():
+                            used_reader = reader
+                            logger.info(f"Success with reader: {reader}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Reader {reader} failed: {e}")
+                        continue
 
             if scene is None or not scene.available_dataset_names():
                 # Last resort: try auto-detection
