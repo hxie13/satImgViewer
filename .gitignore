@@ -67,3 +67,7 @@ conda-env.yml
 *.png
 *.jpg
 *.jpeg
+
+# Project directories (local development only)
+tests/
+docs/
