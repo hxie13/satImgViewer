@@ -22,7 +22,7 @@ import re
 import contextlib
 import time
 import traceback
-from pyresample import geometry  # <--- 确保顶部导入了 geometry
+from pyresample import geometry  # <--- Ensure geometry is imported at the top
 from .interfaces import ISatelliteDataProvider
 from .image_proc import ImageProcessor
 from .geometry import get_projection_config, create_target_area, get_available_projections
@@ -40,13 +40,13 @@ class SatpyDriver(ISatelliteDataProvider):
         self._loaded_files = None  # Track currently loaded files
         # Cache for generated images: key=(tuple(bands), size, gamma, proj_name) -> (image, area)
         self._request_cache = {}
-        # 减少 Satpy 在 reader 初始化时对缺失可选依赖的大量错误/警告打印。
-        # 这些错误通常来自 Satpy 在解析 readers yaml 时尝试导入可选模块（pygrib/pyarrow/eccodes 等）。
+        # Reduce excessive error/warning prints from Satpy during reader initialization for missing optional dependencies.
+        # These errors typically come from Satpy trying to import optional modules (pygrib/pyarrow/eccodes, etc.) when parsing readers yaml.
         try:
             logging.getLogger('satpy.readers.core.loading').setLevel(logging.ERROR)
             logging.getLogger('satpy.readers.core.yaml_reader').setLevel(logging.ERROR)
             logging.getLogger('satpy.readers.core').setLevel(logging.ERROR)
-            # 可选：将 satpy 顶级日志降低为 WARNING，避免过多信息
+            # Optional: reduce satpy top-level logging to WARNING to avoid excessive messages
             logging.getLogger('satpy').setLevel(logging.WARNING)
         except Exception:
             pass
@@ -130,12 +130,12 @@ class SatpyDriver(ISatelliteDataProvider):
 
     def scan_and_group_files(self, folder_path: str) -> list:
         """
-        扫描文件夹，按时间戳将文件分组。
-        返回: list of lists (e.g. [[f1_t0.nc], [f1_t1.nc], [seg1_t2.dat, seg2_t2.dat...]])
+        Scan folder and group files by timestamp.
+        Returns: list of lists (e.g. [[f1_t0.nc], [f1_t1.nc], [seg1_t2.dat, seg2_t2.dat...]])
         """
         import glob
         
-        # 支持的后缀
+        # Supported file extensions
         exts = ['*.nc', '*.NC', '*.dat', '*.DAT', '*.bz2', '*.h5', '*.HDF']
         all_files = []
         for ext in exts:
@@ -144,37 +144,37 @@ class SatpyDriver(ISatelliteDataProvider):
         if not all_files:
             return []
 
-        # 简单的分组逻辑：
-        # 1. 如果是 .dat (葵花原数据)，通常包含 _S0110_, _S0210_ 等段标记，需要按时间聚合
-        # 2. 如果是 .nc (L1/L2)，通常一个文件就是一个时刻
+        # Simple grouping logic:
+        # 1. If .dat (Himawari raw data), usually contains segment markers like _S0110_, _S0210_, need to aggregate by time
+        # 2. If .nc (L1/L2), usually one file is one timestamp
         
-        # 这里使用一个通用的正则提取时间数字 (YYYYMMDD_HHMM 或类似结构)
-        # 如果文件名中包含连续的12-14位数字，通常是时间戳
+        # Use a generic regex to extract timestamp numbers (YYYYMMDD_HHMM or similar structure)
+        # If filename contains consecutive 12-14 digit numbers, usually it's a timestamp
         groups = {}
         
-        # 针对葵花 HSD 数据的特殊正则 (例如 HS_H08_20230101_0300_...)
+        # Special regex for Himawari HSD data (e.g., HS_H08_20230101_0300_...)
         hsd_pattern = re.compile(r'(\d{8}_\d{4})') 
-        # 通用数字提取
+        # Generic number extraction
         generic_pattern = re.compile(r'(\d{12,14})')
 
         for f in sorted(all_files):
             basename = os.path.basename(f)
             
-            # 尝试匹配时间特征
+            # Try to match time signature
             match = hsd_pattern.search(basename)
             if not match:
                 match = generic_pattern.search(basename)
             
             if match:
-                key = match.group(1) # 使用时间字符串作为 Key
+                key = match.group(1)  # Use time string as Key
             else:
-                key = basename # 匹配不到时间，就单独一组
+                key = basename  # If no time matched, put in separate group
 
             if key not in groups:
                 groups[key] = []
             groups[key].append(f)
         
-        # 按时间 Key 排序并转换为列表
+        # Sort by time key and convert to list
         sorted_groups = [groups[k] for k in sorted(groups.keys())]
         return sorted_groups
 
@@ -475,24 +475,24 @@ class SatpyDriver(ISatelliteDataProvider):
             t0 = time.time()
             
             if proj_name == 'geostationary_native':
-                # 原生视角：速度最快
+                # Native view: fastest speed
                 local_scn = self.scn.resample(resampler='native')
                 if debug:
                     print(f"[DEBUG] Using native geostationary projection")
             else:
-                # 平面投影：PlateCarree / Mercator
+                # Flat projection: PlateCarree / Mercator
                 from .geometry import create_target_area
                 target_area = create_target_area(proj_name)
                 
                 if target_area:
-                    # [关键修改] 预览模式强制使用 'nearest' (最近邻) 插值
-                    # 'bilinear' 对全圆盘数据太慢 (需40s+)，'nearest' 仅需 1-2s
+                    # [Key Change] Preview mode forces 'nearest' interpolation
+                    # 'bilinear' is too slow for full disk data (40s+), 'nearest' only needs 1-2s
                     resampler_method = 'nearest' 
                     
                     if debug:
                         print(f"[DEBUG] Resampling to {proj_name} using {resampler_method} for preview")
                     
-                    # radius_of_influence 设置稍微大一点防止出现空洞
+                    # Set radius_of_influence slightly larger to prevent holes
                     local_scn = self.scn.resample(target_area, resampler=resampler_method, radius_of_influence=50000)
                 else:
                     local_scn = self.scn.resample(resampler='native')
@@ -527,11 +527,11 @@ class SatpyDriver(ISatelliteDataProvider):
                 raise ValueError("Unsupported band count")
 
             # 6) Area/extent - use satellite-specific coverage
-            # 6) Area/extent 处理
+            # 6) Area/extent handling
             area = local_scn[real_bands[0]].attrs.get('area')
             
-            # [关键修复] 仅当使用原生投影 (Native) 时，才注入卫星固有覆盖范围
-            # 如果是重投影 (如 Plate Carree)，必须使用投影自身的 Extent (-180~180)
+            # [Key Fix] Only inject satellite inherent coverage when using native projection
+            # If reprojecting (e.g., Plate Carree), must use projection's own Extent (-180~180)
             if proj_name == 'geostationary_native':
                 if hasattr(area, 'satellite_coverage'):
                     pass
@@ -540,8 +540,8 @@ class SatpyDriver(ISatelliteDataProvider):
                     if hasattr(area, '__dict__'):
                         area.__dict__['satellite_coverage'] = coverage
             else:
-                # 对于非原生投影，确保不要带有误导性的 satellite_coverage 属性
-                # 这样 ui 层就会去读取 area_def 真实的 extent
+                # For non-native projections, ensure no misleading satellite_coverage attribute
+                # So UI layer will read area_def's real extent
                 if hasattr(area, '__dict__') and 'satellite_coverage' in area.__dict__:
                     del area.__dict__['satellite_coverage']
             
@@ -610,42 +610,42 @@ class SatpyDriver(ISatelliteDataProvider):
                 traceback.print_exc()
             raise
 
-    # 替换 export_image 方法
+    # Replace export_image method
     def export_image(self, bands: list, output_path: str, proj_name: str = 'plate_carree_global', 
                      export_format: str = 'png', gamma: float = 1.0, calibration: bool = False,
                      region: str = 'china', resample_method: str = 'bilinear'):
         if not self.scn:
             raise ValueError("Scene not loaded")
         
-        # 1. 内存清理
+        # 1. Memory cleanup
         import gc
         gc.collect()
 
         try:
-            # 2. 加载波段
+            # 2. Load bands
             real_bands = [self.dataset_map.get(b, b) for b in bands]
             self.scn.load(real_bands)
             
-            # 3. 智能重采样策略 (解决 1.54GB 内存报错的核心)
+            # 3. Smart resampling strategy (core fix for 1.54GB memory error)
             proj_config = get_projection_config(proj_name)
             
-            # 标记是否需要后续裁剪
+            # Flag whether post-cropping is needed
             need_post_crop = False 
             
             if proj_config['type'] == 'native':
-                # 原生投影：保留全盘，后续裁剪
+                # Native projection: keep full disk, crop later
                 local_scn = self.scn.resample(resampler='native')
                 if region != 'global':
                     need_post_crop = True
             else:
-                # [内存优化] 如果指定了区域，直接构建该区域的网格，避免生成全球大网格
+                # [Memory Optimization] If region specified, directly build grid for that region, avoid generating global large grid
                 if region != 'global':
                     print(f"[Export] Optimizing: Creating dynamic area for region '{region}'...")
                     reg_info = RegionCropper.get_region_info(region)
                     extent = (reg_info['min_lon'], reg_info['min_lat'], 
                               reg_info['max_lon'], reg_info['max_lat'])
                     
-                    # 动态构建区域 (0.05度分辨率，约5km)
+                    # Dynamically build region (0.05 degree resolution, ~5km)
                     width = int((extent[2] - extent[0]) / 0.05)
                     height = int((extent[3] - extent[1]) / 0.05)
                     
@@ -654,24 +654,24 @@ class SatpyDriver(ISatelliteDataProvider):
                         {'proj': 'longlat', 'datum': 'WGS84'},
                         width, height, extent
                     )
-                    # 直接重采样到小区域，内存占用极低
+                    # Directly resample to small region, very low memory usage
                     local_scn = self.scn.resample(target_area, resampler=resample_method, radius_of_influence=50000)
                     need_post_crop = False 
                 else:
-                    # 全球模式
+                    # Global mode
                     target_area = create_target_area(proj_name)
                     local_scn = self.scn.resample(target_area, resampler=resample_method)
                     need_post_crop = False
 
-            # 4. 读取数据并处理
+            # 4. Read data and process
             band_data = {}
             lons, lats = None, None
             
             for i, band_name in enumerate(real_bands):
-                # 强制转为 float32 节省一半内存
+                # Force conversion to float32 to save half memory
                 arr = local_scn[band_name].values.astype(np.float32)
                 
-                # 获取经纬度 (仅 GeoTIFF 需要)
+                # Get lat/lon (only needed for GeoTIFF)
                 if export_format == 'geotiff' and lons is None:
                      area = local_scn[band_name].attrs.get('area')
                      if hasattr(area, 'get_lonlats'):
@@ -681,7 +681,7 @@ class SatpyDriver(ISatelliteDataProvider):
                     arr = Calibration.calibrate_data(arr, self.scn.attrs.get('platform_name'), self.scn.attrs.get('sensor'), bands[i])
                 band_data[bands[i]] = arr
 
-            # 5. 后置裁剪 (仅 Native 模式需要)
+            # 5. Post-crop (only needed for Native mode)
             if need_post_crop and region != 'global':
                 if lons is None:
                     lons, lats = local_scn[real_bands[0]].attrs['area'].get_lonlats()
@@ -697,13 +697,13 @@ class SatpyDriver(ISatelliteDataProvider):
                         region_info['min_lat'], region_info['max_lat']
                     )
 
-            # 6. 合成与保存
+            # 6. Composite and save
             if len(real_bands) == 3:
                 img_data = ImageProcessor.combine_rgb(band_data[bands[0]], band_data[bands[1]], band_data[bands[2]], gamma=gamma)
             else:
                 img_data = ImageProcessor.apply_gamma(ImageProcessor.normalize(band_data[bands[0]]), gamma)
             
-            # 保存逻辑...
+            # Save logic...
             os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
             if export_format == 'png':
                 arr = np.nan_to_num(np.clip(img_data, 0, 1), nan=0.0)

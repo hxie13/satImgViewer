@@ -11,34 +11,34 @@ class ISatelliteDataProvider(ABC):
     New drivers should inherit from ``core.drivers.base.BaseSatelliteDriver``
     instead of this class.
 
-    卫星数据提供者接口。
-    无论是葵花(HSD)还是风云(HDF/NC)，都必须实现这些方法。
+    Satellite data provider interface.
+    Both Himawari (HSD) and Fengyun (HDF/NC) must implement these methods.
     """
     
     @abstractmethod
     def load_scene(self, file_paths: list):
-        """加载文件列表，建立索引，不读取具体数据"""
+        """Load file list, build index, do not read specific data."""
         pass
 
     @abstractmethod
     def get_available_datasets(self) -> list:
-        """返回可用波段/产品列表 (e.g. ['B01', 'B13', 'T05'])"""
+        """Return available band/product list (e.g. ['B01', 'B13', 'T05'])."""
         pass
 
     @abstractmethod
     def get_metadata(self) -> dict:
-        """返回公共元数据 (时间, 卫星名, 分辨率)"""
+        """Return common metadata (time, satellite name, resolution)."""
         pass
 
     @abstractmethod
     def request_image(self, bands: list, size=(1000, 1000)) -> tuple:
         """
-        请求图像数据。
+        Request image data.
         Args:
-            bands: 波段列表 ['B01'] 或 ['B03', 'B02', 'B01']
-            size: 预览时的重采样大小，优化性能
+            bands: Band list ['B01'] or ['B03', 'B02', 'B01']
+            size: Resampling size for preview, optimize performance
         Returns:
             (image_data: np.ndarray, crs: object, extent: tuple)
-            image_data 必须是已经物理定标(Ref/BT)并归一化过的
+            image_data must be physically calibrated (Ref/BT) and normalized
         """
         pass

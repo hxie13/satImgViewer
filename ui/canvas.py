@@ -12,7 +12,7 @@ from core.config import PROJECTION_GRID_SHAPES, PROJECTION_GRID_EXTENTS
 
 logger = logging.getLogger(__name__)
 
-# 忽略 Cartopy 的一些转换警告
+# Suppress Cartopy transformation warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 class StableFigureCanvas(FigureCanvasQTAgg):
@@ -28,16 +28,16 @@ class GeoCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0) # 去掉边缘留白
+        self.layout.setContentsMargins(0, 0, 0, 0)  # Remove edge margins
 
-        # === 样式适配关键点 ===
-        # facecolor 必须与 QSS bg_app 一致 (#080E1C)
+        # === Style Adaptation Key Points ===
+        # facecolor must match QSS bg_app (#080E1C)
         self.fig = Figure(figsize=(8, 6), dpi=100, facecolor='#080E1C')
 
         self.canvas = StableFigureCanvas(self.fig)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
 
-        # 隐藏 Matplotlib 工具栏的默认边框，使其融入
+        # Hide Matplotlib toolbar default border to blend in
         self.toolbar.setStyleSheet("background-color: #0E1828; border: none; color: #8BA5C5;")
         # Enlarge coordinate label on the top-right to avoid clipping.
         if hasattr(self.toolbar, "locLabel") and self.toolbar.locLabel is not None:
@@ -91,10 +91,10 @@ class GeoCanvas(QWidget):
         self.fig.clear()
         self.ax = self.fig.add_subplot(111)
 
-        # 隐藏坐标轴刻度
+        # Hide axis ticks
         self.ax.axis('off')
 
-        # 设置图像背景色 (防止缩放时露出白色)
+        # Set image background color (prevents white showing during zoom)
         self.ax.set_facecolor('#0E1828')
 
         if img_data.ndim == 3:
@@ -106,7 +106,7 @@ class GeoCanvas(QWidget):
 
     def update_image(self, img_data, area_def):
         """
-        核心绘图函数（带投影自适应逻辑）
+        Core rendering function (with projection adaptive logic).
         """
         logger.debug(f"[Canvas] update_image called with img_data shape: {img_data.shape}")
         logger.debug(f"[Canvas] img_data dtype: {img_data.dtype}")
@@ -127,7 +127,7 @@ class GeoCanvas(QWidget):
         except ImportError:
             pass
 
-        # 没有可用地理信息时，直接降级到像素显示，避免错误地理对齐。
+        # When no geographic info available, fallback to pixel display to avoid incorrect geospatial alignment.
         if area_def is None:
             logger.debug("[Canvas] area_def is None, fallback to pixel mode")
             self.plot_pixel_mode(img_data)
@@ -137,13 +137,13 @@ class GeoCanvas(QWidget):
                 logger.exception(f"[Canvas] Draw failed in pixel mode fallback: {e}")
             return
 
-        # 检查图像数据是否有效
+        # Check if image data is valid
         try:
-            # 更详细地检查数据
+            # Check data in more detail
             img_min = np.nanmin(img_data)
             img_max = np.nanmax(img_data)
 
-            # 检查 NaN 和黑色像素
+            # Check NaN and black pixels
             nan_pixels = np.sum(np.isnan(img_data))
             black_pixels = np.sum((img_data < 0.01).all(axis=-1)) if img_data.ndim == 3 else np.sum(img_data < 0.01)
             valid_data_pixels = np.sum((np.abs(img_data) > 0.01).any(axis=-1)) if img_data.ndim == 3 else np.sum(np.abs(img_data) > 0.01)
@@ -153,19 +153,19 @@ class GeoCanvas(QWidget):
             logger.debug(f"[Canvas] NaN pixels: {nan_pixels}, Black/near-black pixels: {black_pixels}")
             logger.debug(f"[Canvas] Valid data pixels: {valid_data_pixels}/{total_pixels} ({100*valid_data_pixels/total_pixels:.1f}%)")
 
-            # 处理无效区域（NaN 或 全黑）- 设置为 NaN 以便 imshow 正确显示透明
+            # Handle invalid regions (NaN or all black) - set to NaN for proper transparency in imshow
             if nan_pixels < total_pixels or black_pixels > 0:
-                # 创建 mask 来识别无效区域
+                # Create mask to identify invalid regions
                 if img_data.ndim == 3:
-                    # RGB 图像：检查所有通道
+                    # RGB image: check all channels
                     valid_mask = (img_data > 0.01).any(axis=-1)
                 else:
-                    # 灰度图像
+                    # Grayscale image
                     valid_mask = img_data > 0.01
 
-                # 如果有大量无效像素，设置为 NaN
+                # If many invalid pixels, set to NaN
                 invalid_ratio = 1 - (valid_data_pixels / total_pixels)
-                if invalid_ratio > 0.1:  # 超过10%是无效的
+                if invalid_ratio > 0.1:  # More than 10% invalid
                     logger.debug(f"[Canvas] Setting {invalid_ratio*100:.1f}% invalid pixels to NaN for transparency")
                     img_data = img_data.copy()
                     img_data[~valid_mask] = np.nan
@@ -184,18 +184,18 @@ class GeoCanvas(QWidget):
 
         h, w = img_data.shape[:2]
 
-        # === 1. 确定投影类型 ===
+        # === 1. Determine projection type ===
         target_crs = None
         target_extent = None
         use_native_projection = False
 
         try:
-            # 获取 area_def 信息
+            # Get area_def information
             proj_dict = getattr(area_def, 'proj_dict', {})
             is_geos = proj_dict.get('proj') == 'geos'
             lon_0 = float(proj_dict.get('lon_0', 105))
 
-            # 根据图像尺寸判断投影类型 (使用配置表，无魔法数字)
+            # Determine projection type based on image size (using config table, no magic numbers)
             grid_proj = PROJECTION_GRID_SHAPES.get((w, h))
             is_global_grid = grid_proj == 'plate_carree_global'
             is_china_region = grid_proj == 'plate_carree_china'
@@ -203,36 +203,36 @@ class GeoCanvas(QWidget):
             logger.debug(f"[Canvas] is_geos: {is_geos}, grid_proj: {grid_proj}")
 
             if is_global_grid:
-                # === 情况 1: 全球网格 ===
+                # === Case 1: Global grid ===
                 logger.debug("[Canvas] Mode: Global Grid (-180 to 180)")
                 target_crs = ccrs.PlateCarree()
                 target_extent = PROJECTION_GRID_EXTENTS['plate_carree_global']
                 logger.debug(f"[Canvas] Using global extent: {target_extent}")
 
             elif is_geos and is_china_region:
-                # === 情况 2: 中国区域 (Plate Carree China) ===
+                # === Case 2: China region (Plate Carree China) ===
                 logger.debug("[Canvas] Mode: China Region")
                 target_crs = ccrs.PlateCarree()
                 target_extent = PROJECTION_GRID_EXTENTS['plate_carree_china']
                 logger.debug(f"[Canvas] Using china extent: {target_extent}")
 
             elif is_geos and not is_global_grid:
-                # === 情况 3: Geostationary 原生视图 ===
+                # === Case 3: Geostationary native view ===
                 logger.debug("[Canvas] Mode: Geostationary Native (Meters)")
                 target_crs = ccrs.Geostationary(central_longitude=lon_0)
                 use_native_projection = True
 
-                # Geostationary 使用米单位的 extent
+                # Geostationary uses extent in meters
                 ae = getattr(area_def, 'area_extent', None)
                 if ae:
-                    # area_extent 是 (xmin, ymin, xmax, ymax) 以米为单位
+                    # area_extent is (xmin, ymin, xmax, ymax) in meters
                     target_extent = (ae[0], ae[2], ae[1], ae[3])
                     logger.debug(f"[Canvas] Using native extent (meters): {target_extent}")
 
             elif proj_dict.get('proj') in ('longlat', 'latlong', 'eqc'):
-                # === 情况 3b: 极轨数据重采样后的动态 PlateCarree 格网 ===
-                # FY3D MERSI 等极轨卫星重采样后的 AreaDefinition 使用 proj='longlat'，
-                # 动态尺寸不匹配 PROJECTION_GRID_SHAPES，需要专门路径处理。
+                # === Case 3b: Dynamic PlateCarree grid after polar orbit resampling ===
+                # AreaDefinition from FY3D MERSI and similar polar orbit satellites after resampling uses proj='longlat',
+                # dynamic sizes don't match PROJECTION_GRID_SHAPES, requiring special handling.
                 logger.debug("[Canvas] Mode: Polar Orbit PlateCarree (dynamic extent)")
                 target_crs = ccrs.PlateCarree()
 
@@ -244,11 +244,11 @@ class GeoCanvas(QWidget):
                     logger.debug(f"[Canvas] Polar orbit extent (W,E,S,N): {target_extent}")
 
             else:
-                # === 情况 4: 其他投影 ===
+                # === Case 4: Other projections ===
                 logger.debug("[Canvas] Mode: Generic Projection")
                 target_crs = ccrs.PlateCarree()
 
-                # 尝试获取 extent
+                # Try to get extent
                 ae = getattr(area_def, 'area_extent', None)
                 if ae:
                     target_extent = (ae[0], ae[2], ae[1], ae[3])
@@ -257,33 +257,33 @@ class GeoCanvas(QWidget):
             logger.exception(f"[Canvas] Projection setup failed: {e}")
             target_crs = None
 
-        # === 2. 执行绘图 ===
+        # === 2. Execute drawing ===
         if target_crs:
             try:
                 logger.debug(f"[Canvas] Using CRS: {type(target_crs).__name__}")
                 if target_extent:
                     logger.debug(f"[Canvas] Using extent: {target_extent}")
 
-                # 创建带投影的坐标轴
+                # Create axes with projection
                 self.ax = self.fig.add_subplot(111, projection=target_crs)
                 self.ax.format_coord = self._fast_format_coord
 
-                # 准备 imshow 参数
+                # Prepare imshow parameters
                 kwargs = {
                     'origin': 'upper',
                 }
 
-                # 对于 geostationary，需要使用 Geostationary transform
+                # For geostationary, need Geostationary transform
                 if use_native_projection:
                     kwargs['transform'] = ccrs.Geostationary(central_longitude=lon_0)
                 else:
                     kwargs['transform'] = ccrs.PlateCarree()
 
-                # 添加 extent
+                # Add extent
                 if target_extent:
                     kwargs['extent'] = target_extent
 
-                # 绘制图像
+                # Draw image
                 if img_data.ndim == 3:
                     self.ax.imshow(img_data, **kwargs)
                 else:
@@ -314,17 +314,17 @@ class GeoCanvas(QWidget):
         else:
             self.plot_pixel_mode(img_data)
 
-        # === 3. 刷新画布 ===
+        # === 3. Refresh canvas ===
         try:
             self.canvas.draw()
         except Exception as e:
             logger.exception(f"[Canvas] Draw failed: {e}")
 
     def plot_pixel_mode(self, img_data):
-        """降级显示：不带地图投影，只显示像素矩阵"""
+        """Fallback display: show pixel matrix without map projection."""
         logger.debug(f"[Canvas] plot_pixel_mode called with img shape={getattr(img_data, 'shape', 'unknown')}")
         self.fig.clear()
-        self.ax = self.fig.add_subplot(111) # 普通 Axes，非 GeoAxes
+        self.ax = self.fig.add_subplot(111)  # Regular Axes, not GeoAxes
 
         if img_data.ndim == 3:
             logger.debug("[Canvas] Displaying RGB image in pixel mode")

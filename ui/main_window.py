@@ -617,7 +617,7 @@ class MainWindow(QMainWindow):
         proj_id = self.projection_combobox.currentData()
         if proj_id == 'geostationary_native':
             if self._state.img_3d is None or self._state.proj_3d != 'plate_carree_global':
-                self._set_ui_status("loading", "正在生成 3D 纹理...")
+                self._set_ui_status("loading", "Generating 3D texture...")
                 self._generate_3d_texture()
                 return
         self.update_3d_view()
@@ -630,12 +630,12 @@ class MainWindow(QMainWindow):
         if idx != self.current_frame_index:
             self.load_frame(idx)
 
-    # 閻熸瑥妫濋。鍓佲偓鐢靛帶閸ゎ參鏌呴弰蹇曞竼
+    # Video export button callback
     def export_video_sequence(self):
         if not self.file_groups:
             return
 
-        # 闁兼儳鍢茶ぐ鍥亹閹惧啿顤呮繛澶堝灪椤斿瞼鎷嬮崜褏鏋?
+        # Check RGB band selection
         r, g, b = self.red_drop_zone.text(), self.green_drop_zone.text(), self.blue_drop_zone.text()
         bands = []
         if r and g and b:
@@ -644,7 +644,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Info", "Please setup RGB bands first.")
             return
 
-        # 闂侇偄顦扮€氥劍绌卞┑鍡欐憼閻犱警鍨扮欢?
+        # Get output file path
         output_file, _ = QFileDialog.getSaveFileName(self, "Save Video", "", "MP4 Video (*.mp4)")
         if not output_file:
             return
@@ -764,37 +764,37 @@ class MainWindow(QMainWindow):
         logger.debug(f"[MainWindow] Image ready: shape={img.shape}")
         self.render_info_label.setText(f"Render: {img.shape[1]}x{img.shape[0]}")
 
-        # 缂傚倹鎸搁悺銊ㄣ亹閹惧啿顤呴柡浣哄瀹撲線鏁嶇仦鑲╄繑婵犲﹥鍨靛锛勬嫬閸愨晜娈诲ù锝堟硶閺?
+        # Cache image data for subsequent 3D updates
         self.cached_img = img
 
-        # 闁哄秷顫夊畵渚€宕堕幆褍鍓奸悘蹇撴惈椤曨厾娑甸鑲╂毎婵繐绲块垾姗€鎯?extent
+        # Try to get geographic extent
         h, w = img.shape[:2]
         logger.debug(f"[MainWindow] Detecting extent: w={w}, h={h}")
 
-        # 闁活潿鍔戦崢銈囩磾椤旇￥鈧啴寮撮幐搴″簥缁绢収鍓涚槐顏堟儘娴ｇ儤鐣卞鍕⒐绾爼寮弶璺ㄦ憻
+        # First try to determine extent based on predefined grid sizes
         grid_proj = PROJECTION_GRID_SHAPES.get((w, h))
         if grid_proj is not None:
             self.cached_extent = PROJECTION_GRID_EXTENTS[grid_proj]
             logger.debug(f"[MainWindow] Grid proj '{grid_proj}': using extent {self.cached_extent}")
         else:
-            # 闁稿繑婀圭划顒勫箚閸涱厼鏋岄柨娑樻箼eostationary 闁告鍠撻弫鎾剁驳婢舵稓绀嗛柨娑欑煯婵炲洭鎮介妸銉﹀嬀闁荤偛妫滅€垫牠宕?
+            # If not standard grid size, try to extract extent from area_def (for geostationary or other projections)
             self.cached_extent = get_geographic_extent(area_def)
             logger.debug(f"[MainWindow] Other: using geo extent {self.cached_extent}")
 
-        # 1. 闁哄洤鐡ㄩ弻?2D 闁革附婢樺ù?
+        # 1. Update 2D canvas first
         try:
             self.map_2d_canvas.update_image(img, area_def)
         except Exception as e:
             logger.exception(f"2D update failed: {e}")
 
-        # 2. 闁哄洤鐡ㄩ弻?3D 闁革附澹嗛幃?(濞达綀娉曢弫銈堛亹閹惧啿顤呮繝濠冨灥濞硷繝鎯冮崟顖楀亾韫囨梹顫栭幖?
+        # 2. Then update 3D preview (if current tab is 3D and data is ready)
         self.update_3d_view()
         self._set_ui_status("success", "Preview updated")
     
     def on_opacity_change(self, value):
         """Update 3D overlay opacity."""
         self.opacity_label.setText(f"Overlay Opacity: {value}%")
-        # 閻庡湱鍋炲鍌炲礆闁垮鐓€ 3D 閻熸瑥妫楀ù?
+        # If 3D tab is active, update 3D view
         self.update_3d_view()
     
     def update_3d_view(self):
@@ -874,7 +874,7 @@ class MainWindow(QMainWindow):
 
     def export_image(self):
         """Export current image to PNG or GeoTIFF."""
-        # 闁兼儳鍢茶ぐ鍥亹閹惧啿顤呴梺顐㈩槹鐎氥劑鎯冮崟顒€鐨炬繛鍫ユ涧閹蜂即骞庨弴鐐差殯
+        # Check if bands are selected
         r, g, b = self.red_drop_zone.text(), self.green_drop_zone.text(), self.blue_drop_zone.text()
         bands = []
 
@@ -886,7 +886,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Info", "Please select bands first.")
             return
 
-        # 闁兼儳鍢茶ぐ鍥箮閺囩偛顨涢柛婊冩湰閺嬪啯绂掗幆鎵唴鐎?
+        # Get projection settings
         proj_id = self.projection_combobox.currentData()
         proj_name = self.projection_combobox.currentText()
 
@@ -902,7 +902,7 @@ class MainWindow(QMainWindow):
 
         output_path = output_file[0]
 
-        # 闁告艾楠歌ぐ瀵哥棯鐠恒劉鏌ら悗鐢靛帶閸?
+        # Trigger export task
         self._set_ui_status("loading", f"Exporting to {proj_name}...")
         self.export_info_label.setText("Export: still image running")
         self._export_controller.export_still(
@@ -913,7 +913,7 @@ class MainWindow(QMainWindow):
         )
 
     # ==========================================================================
-    # Controller Slots 闁?wired in __init__, bridge controllers 闁?legacy UI
+    # Controller Slots - wired in __init__, bridge controllers to legacy UI
     # ==========================================================================
 
     def _on_image_ctrl_ready(self, img, extent, area_def):
@@ -924,7 +924,7 @@ class MainWindow(QMainWindow):
         self.on_data_ready(img, area_def)
 
     def _on_3d_texture_ctrl_ready(self, img, extent):
-        """Slot: ImageViewController finished generating a 3D plate-carr閼煎崘 texture."""
+        """Slot: ImageViewController finished generating a 3D plate-carree texture."""
         self._state.img_3d    = img
         self._state.extent_3d = extent
         self._state.proj_3d = 'plate_carree_global'

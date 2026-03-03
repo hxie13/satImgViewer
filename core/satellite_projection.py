@@ -7,14 +7,14 @@ import numpy as np
 from numpy import deg2rad, rad2deg, arctan, arcsin, tan, sqrt, cos, sin
 
 # Earth parameters
-ea = 6378.137  # 地球的半长轴[km]
-eb = 6356.7523  # 地球的短半轴[km]
-h = 42164  # 地心到卫星质心的距离[km]
+ea = 6378.137  # Earth's semi-major axis [km]
+eb = 6356.7523  # Earth's semi-minor axis [km]
+h = 42164  # Distance from Earth's center to satellite [km]
 
 # Satellite-specific parameters
 SATELLITE_PARAMS = {
     'FY4A': {
-        'λD': deg2rad(104.7),  # 卫星星下点所在经度
+        'λD': deg2rad(104.7),  # Satellite sub-point longitude
         'COFF': {
             "0500M": 10991.5,
             "1000M": 5495.5,
@@ -29,7 +29,7 @@ SATELLITE_PARAMS = {
         }
     },
     'FY4B': {
-        'λD': deg2rad(104.7),  # 卫星星下点所在经度
+        'λD': deg2rad(104.7),  # Satellite sub-point longitude
         'COFF': {
             "0500M": 10991.5,
             "1000M": 5495.5,
@@ -44,7 +44,7 @@ SATELLITE_PARAMS = {
         }
     },
     'Himawari-8': {
-        'λD': deg2rad(140.7),  # 卫星星下点所在经度
+        'λD': deg2rad(140.7),  # Satellite sub-point longitude
         'COFF': {
             "0500M": 10991.5,
             "1000M": 5495.5,
@@ -62,7 +62,7 @@ SATELLITE_PARAMS = {
 
 def latlon2linecolumn(lat, lon, resolution, satellite='FY4A'):
     """
-    经纬度转行列
+    Latitude/longitude to line/column conversion
     (lat, lon) → (line, column)
     
     Args:
@@ -79,34 +79,34 @@ def latlon2linecolumn(lat, lon, resolution, satellite='FY4A'):
     λD = params['λD']
     COFF = params['COFF']
     CFAC = params['CFAC']
-    LOFF = COFF  # 行偏移
-    LFAC = CFAC  # 行比例因子
+    LOFF = COFF  # Line offset
+    LFAC = CFAC  # Line scale factor
     
-    # Step2.将地理经纬度的角度表示转化为弧度表示
+    # Step2. Convert geographic lat/lon from degrees to radians
     lat = deg2rad(lat)
     lon = deg2rad(lon)
     
-    # Step3.将地理经纬度转化成地心经纬度
+    # Step3. Convert geographic lat/lon to geocentric lat/lon
     eb2_ea2 = eb ** 2 / ea ** 2
     λe = lon
     φe = arctan(eb2_ea2 * tan(lat))
     
-    # Step4.求Re
+    # Step4. Calculate Re
     cosφe = cos(φe)
     re = eb / sqrt(1 - (1 - eb2_ea2) * cosφe ** 2)
     
-    # Step5.求r1,r2,r3
+    # Step5. Calculate r1, r2, r3
     λe_λD = λe - λD
     r1 = h - re * cosφe * cos(λe_λD)
     r2 = -re * cosφe * sin(λe_λD)
     r3 = re * sin(φe)
     
-    # Step6.求rn,x,y
+    # Step6. Calculate rn, x, y
     rn = sqrt(r1 ** 2 + r2 ** 2 + r3 ** 2)
     x = rad2deg(arctan(-r2 / r1))
     y = rad2deg(arcsin(-r3 / rn))
     
-    # Step7.求c,l
+    # Step7. Calculate c, l
     column = COFF[resolution] + x * 2 ** -16 * CFAC[resolution]
     line = LOFF[resolution] + y * 2 ** -16 * LFAC[resolution]
     
@@ -114,7 +114,7 @@ def latlon2linecolumn(lat, lon, resolution, satellite='FY4A'):
 
 def linecolumn2latlon(line, column, resolution, satellite='FY4A'):
     """
-    行列转经纬度
+    Line/column to latitude/longitude conversion
     (line, column) → (lat, lon)
     
     Args:
@@ -131,27 +131,27 @@ def linecolumn2latlon(line, column, resolution, satellite='FY4A'):
     λD = params['λD']
     COFF = params['COFF']
     CFAC = params['CFAC']
-    LOFF = COFF  # 行偏移
-    LFAC = CFAC  # 行比例因子
+    LOFF = COFF  # Line offset
+    LFAC = CFAC  # Line scale factor
     
-    # Step1.计算x,y
+    # Step1. Calculate x, y
     x = (column - COFF[resolution]) * 2 ** 16 / CFAC[resolution]
     y = (line - LOFF[resolution]) * 2 ** 16 / LFAC[resolution]
     
-    # Step2.将x,y转化为弧度
+    # Step2. Convert x, y to radians
     x_rad = deg2rad(x)
     y_rad = deg2rad(y)
     
-    # Step3.计算r1,r2,r3
+    # Step3. Calculate r1, r2, r3
     r1 = -cos(y_rad) * cos(x_rad)
     r2 = cos(y_rad) * sin(x_rad)
     r3 = -sin(y_rad)
     
-    # Step4.计算地心经纬度
+    # Step4. Calculate geocentric lat/lon
     λe = λD + arctan(r2 / r1)
     φe = arcsin(r3 / sqrt(r1 ** 2 + r2 ** 2 + r3 ** 2))
     
-    # Step5.将地心经纬度转化为地理经纬度
+    # Step5. Convert geocentric lat/lon to geographic lat/lon
     eb2_ea2 = eb ** 2 / ea ** 2
     lat = rad2deg(arctan(tan(φe) / eb2_ea2))
     lon = rad2deg(λe)
