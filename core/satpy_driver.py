@@ -1,3 +1,20 @@
+"""
+DEPRECATED — SatpyDriver (legacy single-file driver)
+
+This module is retained for backward compatibility only.  New code should use
+the modular driver architecture under ``core/drivers/`` via
+``core.manager.SatelliteImageManager``.
+
+Planned retirement: Phase 2 of the refactoring roadmap.
+"""
+import warnings as _warnings
+_warnings.warn(
+    "core.satpy_driver.SatpyDriver is deprecated and will be removed in a future "
+    "version.  Use core.manager.SatelliteImageManager instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 import logging
 import numpy as np
 import os
@@ -8,7 +25,7 @@ import traceback
 from pyresample import geometry  # <--- 确保顶部导入了 geometry
 from .interfaces import ISatelliteDataProvider
 from .image_proc import ImageProcessor
-from .projections import get_projection_config, create_target_area, get_available_projections
+from .geometry import get_projection_config, create_target_area, get_available_projections
 from .satellite_projection import get_satellite_coverage
 from .calibration import Calibration, GLTCorrection, RegionCropper, Resampler, GeoTIFFWriter
 try:
@@ -20,6 +37,9 @@ class SatpyDriver(ISatelliteDataProvider):
     def __init__(self):
         self.scn = None
         self.dataset_map = {}
+        self._loaded_files = None  # Track currently loaded files
+        # Cache for generated images: key=(tuple(bands), size, gamma, proj_name) -> (image, area)
+        self._request_cache = {}
         # 减少 Satpy 在 reader 初始化时对缺失可选依赖的大量错误/警告打印。
         # 这些错误通常来自 Satpy 在解析 readers yaml 时尝试导入可选模块（pygrib/pyarrow/eccodes 等）。
         try:
@@ -30,6 +50,10 @@ class SatpyDriver(ISatelliteDataProvider):
             logging.getLogger('satpy').setLevel(logging.WARNING)
         except Exception:
             pass
+
+    def clear_cache(self) -> None:
+        """Clear the request image cache."""
+        self._request_cache.clear()
 
     # We'll import `satpy` lazily inside `load_scene` while redirecting stdout/stderr
     _satpy = None
@@ -63,6 +87,13 @@ class SatpyDriver(ISatelliteDataProvider):
         _, ext = os.path.splitext(filename)
         ext = ext.lower()
 
+        # FY3D MERSI detection (check before FY4A/B as FY3D is different satellite)
+        if 'FY3D' in name_upper or 'FY-3D' in name_upper:
+            if 'MERSI' in name_upper:
+                # Try MERSI-2 L1B reader first, fall back to generic
+                return 'mersi2_l1b'
+            return 'generic_image'
+
         if 'FY4A' in name_upper or 'FY-4A' in name_upper:
             return 'agri_fy4a'
         if 'FY4B' in name_upper or 'FY-4B' in name_upper:
@@ -78,6 +109,8 @@ class SatpyDriver(ISatelliteDataProvider):
 
         if ext == '.nc':
              return 'generic_image'
+        if ext == '.hdf' or ext == '.h5':
+            return 'generic_image'
         return 'ahi_hsd'
     
     def group_files_by_type(self, file_paths: list) -> dict:
@@ -145,38 +178,53 @@ class SatpyDriver(ISatelliteDataProvider):
         sorted_groups = [groups[k] for k in sorted(groups.keys())]
         return sorted_groups
 
+    def _configure_satpy_logging(self) -> None:
+        """
+        Configure logging to suppress SatPy reader loading warnings.
+
+        Must be called BEFORE importing satpy to suppress YAML parsing errors.
+        """
+        import logging
+
+        # Define loggers that should be suppressed
+        suppress_loggers = [
+            'satpy.readers.core.loading',
+            'satpy.readers.core.yaml_reader',
+            'satpy.readers.core',
+            'satpy.readers',
+            'satpy.scene',
+            'satpy',
+            'pyresample',
+        ]
+
+        for name in suppress_loggers:
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.ERROR)  # Only show errors, not warnings
+            lg.propagate = False
+            # Remove existing handlers and add NullHandler
+            lg.handlers = []
+            lg.addHandler(logging.NullHandler())
+
     def load_scene(self, file_paths: list):
         """
         Load scenes from multiple files, grouping them by type if necessary.
         Returns True if at least one scene was successfully loaded.
         """
-        # Import satpy lazily here while suppressing stdout/stderr so reader YAML
-        # parsing errors (missing optional deps) don't spam the console during import.
+        # Configure logging BEFORE importing satpy to suppress reader YAML parsing errors
+        if self._satpy is None:
+            self._configure_satpy_logging()
+
+        # Import satpy lazily here while suppressing stdout/stderr
         if self._satpy is None:
             try:
                 if not os.environ.get('SATIMG_DEBUG'):
-                    with open(os.devnull, 'w') as devnull, contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                    with open(os.devnull, 'w') as devnull, \
+                         contextlib.redirect_stdout(devnull), \
+                         contextlib.redirect_stderr(devnull):
                         import satpy as _satpy_module
                 else:
                     import satpy as _satpy_module
                 self._satpy = _satpy_module
-                # configure logger suppression after import
-                try:
-                    logging.getLogger('satpy.readers.core.loading').setLevel(logging.ERROR)
-                    logging.getLogger('satpy.readers.core.yaml_reader').setLevel(logging.ERROR)
-                    logging.getLogger('satpy.readers.core').setLevel(logging.ERROR)
-                    logging.getLogger('satpy.readers').setLevel(logging.ERROR)
-                    logging.getLogger('satpy').setLevel(logging.WARNING)
-                    for name in ('satpy.readers.core.loading', 'satpy.readers.core', 'satpy.readers', 'satpy'):
-                        lg = logging.getLogger(name)
-                        try:
-                            lg.propagate = False
-                            lg.handlers = []
-                            lg.addHandler(logging.NullHandler())
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
             except Exception:
                 # If import fails, leave self._satpy None and let subsequent attempts handle it.
                 self._satpy = None
@@ -210,11 +258,12 @@ class SatpyDriver(ISatelliteDataProvider):
                 if scene.available_dataset_names():
                     print(f"Success with {reader_name}")
                     self.scenes.append(scene)
-                    
+
                     # Set the first successful scene as the current one
                     if not hasattr(self, 'scn') or not self.scn:
                         self.scn = scene
                         self._build_dataset_map()
+                        self.clear_cache()  # Clear cache when new scene is loaded
                         print(f"Set {reader_name} scene as current")
             except Exception as e:
                 print(f"Failed to load group with {reader_name}: {e}")
@@ -258,6 +307,7 @@ class SatpyDriver(ISatelliteDataProvider):
             if self.scn.available_dataset_names():
                 print(f"Auto-detection success: {self.scn.attrs.get('reader')}")
                 self._build_dataset_map()
+                self.clear_cache()  # Clear cache when new scene is loaded
                 return True
         except Exception:
             pass
@@ -275,6 +325,7 @@ class SatpyDriver(ISatelliteDataProvider):
             if self.scn.available_dataset_names():
                 print("Success with 'generic_image'!")
                 self._build_dataset_map()
+                self.clear_cache()  # Clear cache when new scene is loaded
                 return True
         except Exception as e:
             print(f"Generic reader also failed: {e}")
@@ -360,6 +411,16 @@ class SatpyDriver(ISatelliteDataProvider):
         debug = bool(os.environ.get('SATIMG_DEBUG'))
 
         start_t = time.time()
+
+        # Check cache first
+        cache_key = (tuple(sorted(bands)), tuple(size), round(gamma, 2), proj_name)
+        if cache_key in self._request_cache:
+            if debug:
+                print(f"[DEBUG] Cache hit for {cache_key}")
+            cached_img, cached_area = self._request_cache[cache_key]
+            # Return a copy to prevent mutation
+            return cached_img.copy(), cached_area
+
         try:
             if debug:
                 print(f"[DEBUG] Requesting image for bands={bands} target_size={size} gamma={gamma}")
@@ -374,9 +435,23 @@ class SatpyDriver(ISatelliteDataProvider):
             if debug:
                 print(f"[DEBUG] Mapped bands -> {real_bands}")
 
-            # 2) Load datasets into the Scene
+            # 2) Load datasets into the Scene (only load what's not already loaded)
             t0 = time.time()
-            self.scn.load(real_bands)
+            try:
+                # Get already loaded dataset names
+                loaded_datasets = set(self.scn.available_dataset_names()) if hasattr(self.scn, 'available_dataset_names') else set()
+                # Find bands that need to be loaded
+                bands_to_load = [b for b in real_bands if b not in loaded_datasets]
+                if bands_to_load:
+                    self.scn.load(bands_to_load)
+                    if debug:
+                        print(f"[DEBUG] Loaded new bands: {bands_to_load}")
+                else:
+                    if debug:
+                        print(f"[DEBUG] All bands already loaded, skipping load()")
+            except Exception:
+                # Fallback: load all bands if check fails
+                self.scn.load(real_bands)
             t1 = time.time()
             if debug:
                 print(f"[DEBUG] Scene.load took {t1 - t0:.2f}s")
@@ -406,7 +481,7 @@ class SatpyDriver(ISatelliteDataProvider):
                     print(f"[DEBUG] Using native geostationary projection")
             else:
                 # 平面投影：PlateCarree / Mercator
-                from .projections import create_target_area
+                from .geometry import create_target_area
                 target_area = create_target_area(proj_name)
                 
                 if target_area:
@@ -524,6 +599,9 @@ class SatpyDriver(ISatelliteDataProvider):
                 except Exception:
                     pass
                 print(f"[DEBUG] request_image total time: {time.time() - start_t:.2f}s")
+
+            # Cache the result
+            self._request_cache[cache_key] = (img_data, area)
 
             return img_data, area
         except Exception as e:

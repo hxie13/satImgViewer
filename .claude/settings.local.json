@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.ssec.wisc.edu)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:satpy.readthedocs.io)",
+      "WebFetch(domain:www.eoportal.org)",
+      "WebFetch(domain:html.rhhz.net)",
+      "WebFetch(domain:www.mdpi.com)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "WebFetch(domain:space.oscar.wmo.int)",
+      "WebFetch(domain:www.nsmc.org.cn)",
+      "WebFetch(domain:meteothink.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:fypy.readthedocs.io)",
+      "WebFetch(domain:blog.csdn.net)",
+      "WebFetch(domain:www.researchgate.net)"
+    ]
+  }
+}

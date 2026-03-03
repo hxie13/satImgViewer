@@ -1,8 +1,16 @@
+# DEPRECATED — ISatelliteDataProvider
+# This interface is superseded by core.drivers.base.BaseSatelliteDriver.
+# Retained only for backward compatibility with legacy code that still imports it.
 from abc import ABC, abstractmethod
 import numpy as np
 
 class ISatelliteDataProvider(ABC):
     """
+    DEPRECATED: Legacy satellite data provider interface.
+
+    New drivers should inherit from ``core.drivers.base.BaseSatelliteDriver``
+    instead of this class.
+
     卫星数据提供者接口。
     无论是葵花(HSD)还是风云(HDF/NC)，都必须实现这些方法。
     """

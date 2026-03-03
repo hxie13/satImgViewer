@@ -81,10 +81,29 @@ class Globe3DCanvas(QWidget):
             ax = fig.add_axes([0, 0, 1, 1], projection=ccrs.PlateCarree())
             
             ax.set_global()
-            ax.add_feature(cfeature.LAND, facecolor='#202020', edgecolor='none')
-            ax.add_feature(cfeature.OCEAN, facecolor='#0a0a0a')
-            ax.add_feature(cfeature.BORDERS, linestyle=':', edgecolor='#444444', linewidth=0.5)
-            ax.add_feature(cfeature.COASTLINE, edgecolor='#666666', linewidth=0.8)
+            # ── Space-dark cartographic palette for 3D globe ──────────
+            # Axes bg: cosmic void between land/ocean polygons
+            ax.set_facecolor('#050B14')
+            # Ocean: near-void deep blue
+            ax.add_feature(cfeature.OCEAN.with_scale('110m'),
+                           facecolor='#050B14', edgecolor='none')
+            # Land: dark olive-forest, distinct from ocean without
+            # competing with satellite data colour renditions
+            ax.add_feature(cfeature.LAND.with_scale('110m'),
+                           facecolor='#0E1F16', edgecolor='none')
+            # Rivers: barely-visible waterway traces
+            ax.add_feature(cfeature.RIVERS.with_scale('110m'),
+                           edgecolor='#0B2540', linewidth=0.35, alpha=0.7)
+            # Borders: thin dark-blue nation outlines
+            ax.add_feature(cfeature.BORDERS.with_scale('110m'),
+                           edgecolor='#1A3A5A', linewidth=0.4, linestyle='-')
+            # Coastlines: steel blue — the primary visual anchor
+            ax.add_feature(cfeature.COASTLINE.with_scale('110m'),
+                           edgecolor='#2A6CA0', linewidth=0.7)
+            # Graticule: near-invisible lat/lon grid lines
+            ax.gridlines(linewidth=0.25, color='#0D1E30',
+                         alpha=0.8, linestyle='-')
+            # ─────────────────────────────────────────────────────────
             
             canvas.draw()
             
@@ -175,3 +194,13 @@ class Globe3DCanvas(QWidget):
     def reset_camera(self):
         if getattr(self, 'available', False):
             self.view.camera.set_range()
+
+    def clear_overlay(self):
+        """Reset globe texture to base map only."""
+        if not getattr(self, 'available', True):
+            return
+        try:
+            self.tex_filter.texture = np.ascontiguousarray(self.base_map.copy())
+            self.canvas.update()
+        except Exception as e:
+            print(f"[3D] clear_overlay error: {e}")

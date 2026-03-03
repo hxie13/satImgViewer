@@ -1,66 +1,100 @@
 from PyQt6.QtWidgets import QListWidget, QLineEdit
 from PyQt6.QtCore import Qt, QMimeData
-from PyQt6.QtGui import QDrag  # <--- 必须导入 QDrag
+from PyQt6.QtGui import QDrag
+
 
 class DraggableList(QListWidget):
-    """支持拖出的列表控件"""
-    def __init__(self, parent=None):
+    """Band list that supports drag and configurable density."""
+
+    def __init__(self, parent=None, density: str = "comfortable"):
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.set_density(density)
+
+    def set_density(self, density: str) -> None:
+        value = "compact" if density == "compact" else "comfortable"
+        self.setProperty("density", value)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
     def startDrag(self, supportedActions):
-        """
-        重写拖拽开始事件：将选中的波段名称打包进 MimeData
-        """
         item = self.currentItem()
         if not item:
             return
 
-        # 1. 创建数据包
         mime = QMimeData()
-        mime.setText(item.text()) # 将波段名 (e.g., "B13") 放入文本
-        
-        # 2. 创建拖拽对象
+        mime.setText(item.text())
+
         drag = QDrag(self)
         drag.setMimeData(mime)
-        
-        # 3. (可选) 设置拖拽时的缩略图，这里省略，使用默认光标
-        
-        # 4. 执行拖拽 (阻塞式调用)
         drag.exec(supportedActions)
 
+
 class BandDropZone(QLineEdit):
-    def __init__(self, placeholder):
+    STATE_NORMAL = "normal"
+    STATE_HOVER = "hover"
+    STATE_ACTIVE = "active"
+    STATE_INVALID = "invalid"
+
+    def __init__(self, placeholder: str, channel: str = ""):
         super().__init__()
         self.setPlaceholderText(placeholder)
         self.setReadOnly(True)
         self.setAcceptDrops(True)
-        
-        # 这里只保留特殊的虚线边框样式，颜色留给 QSS 控制
-        # 或者直接定义一种特殊的深色虚线风格
-        self.setStyleSheet("""
-            QLineEdit {
-                border: 2px dashed #555; /* 深灰色虚线 */
-                border-radius: 5px;
-                padding: 5px;
-                background: #252525; /* 比背景稍深，形成凹槽感 */
-                color: #ddd;
-            }
-            QLineEdit:hover {
-                border-color: #0078d7; /* 悬停变蓝 */
-                background: #2a2a2a;
-            }
-        """)
+        self.setObjectName("BandDropZone")
+        if channel:
+            self.setProperty("channel", channel)
+        self.set_state(self.STATE_NORMAL)
+
+    def set_state(self, state: str) -> None:
+        if state not in {
+            self.STATE_NORMAL,
+            self.STATE_HOVER,
+            self.STATE_ACTIVE,
+            self.STATE_INVALID,
+        }:
+            state = self.STATE_NORMAL
+        self.setProperty("dropState", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self.text().strip():
+            self.set_state(self.STATE_ACTIVE)
+        else:
+            self.set_state(self.STATE_HOVER)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self.text().strip():
+            self.set_state(self.STATE_ACTIVE)
+        else:
+            self.set_state(self.STATE_NORMAL)
+
+    def clear_band(self) -> None:
+        self.clear()
+        self.set_state(self.STATE_NORMAL)
 
     def dragEnterEvent(self, event):
-        # 只接受文本格式
         if event.mimeData().hasText():
             event.acceptProposedAction()
+            self.set_state(self.STATE_HOVER)
         else:
+            self.set_state(self.STATE_INVALID)
             event.ignore()
 
     def dropEvent(self, event):
-        text = event.mimeData().text()
+        text = event.mimeData().text().strip()
+        if not text:
+            self.set_state(self.STATE_INVALID)
+            event.ignore()
+            return
+
         self.setText(text)
+        self.set_state(self.STATE_ACTIVE)
         event.acceptProposedAction()
+
