@@ -48,7 +48,8 @@ class FileRecognitionResult:
         return self.confidence > 0.5 and self.reader != "auto"
 
 
-class FilePatternRule(NamedTuple):
+@dataclass(frozen=True)
+class FilePatternRule:
     """Pattern rule for file recognition."""
     pattern: str
     satellite: SatelliteType
@@ -59,53 +60,64 @@ class FilePatternRule(NamedTuple):
 
 # =============================================================================
 # Filename Pattern Database
-# Format: (regex_pattern, satellite, product_level, reader, confidence)
+# Format: FilePatternRule(regex_pattern, satellite, product_level, reader, confidence)
 # =============================================================================
 
 FILE_PATTERNS: List[FilePatternRule] = [
     # FY-4B AGRI L1 - Full Disk
-    (r'FY4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
-    (r'FY-4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
+    FilePatternRule(r'FY4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
+    FilePatternRule(r'FY-4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
     # FY-4B AGRI L1 - China region
-    (r'FY4B.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
+    FilePatternRule(r'FY4B.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
     # FY-4B AGRI L2 products
-    (r'FY4B.*AGRI.*L2.*CLM.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    (r'FY4B.*AGRI.*L2.*FOG.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    (r'FY4B.*AGRI.*L2.*CWP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    (r'FY4B.*AGRI.*L2.*CTT.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    (r'FY4B.*AGRI.*L2.*CTP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
+    FilePatternRule(r'FY4B.*AGRI.*L2.*CLM.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
+    FilePatternRule(r'FY4B.*AGRI.*L2.*FOG.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
+    FilePatternRule(r'FY4B.*AGRI.*L2.*CWP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
+    FilePatternRule(r'FY4B.*AGRI.*L2.*CTT.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
+    FilePatternRule(r'FY4B.*AGRI.*L2.*CTP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
     
     # FY-4A AGRI L1
-    (r'FY4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
-    (r'FY-4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
-    (r'FY4A.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
+    FilePatternRule(r'FY4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
+    FilePatternRule(r'FY-4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
+    FilePatternRule(r'FY4A.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
     
     # FY-3D MERSI L1
-    (r'FY3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
-    (r'FY-3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
+    FilePatternRule(r'FY3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
+    FilePatternRule(r'FY-3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
     
-    # Himawari-8 HSD
-    (r'HS_H08_\d{8}_\d{4}.*\.DAT', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
-    (r'HS_H08_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
-    # Himawari-9 HSD
-    (r'HS_H09_\d{8}_\d{4}.*\.DAT', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
-    (r'HS_H09_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
-    # Himawari NetCDF
-    (r'H08.*\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
-    (r'H09.*\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    # Himawari-8 HSD (Standard format)
+    FilePatternRule(r'HS_H08_\d{8}_\d{4}.*\.DAT', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
+    FilePatternRule(r'HS_H08_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
+    # Himawari-9 HSD (Standard format)
+    FilePatternRule(r'HS_H09_\d{8}_\d{4}.*\.DAT', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
+    FilePatternRule(r'HS_H09_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
+    
+    # Himawari NetCDF formats (various naming conventions)
+    # Standard gridded format: H08_20230101_0300_xxx.nc
+    FilePatternRule(r'H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    FilePatternRule(r'H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    # Alternative format: AHI_H08_20230101_0300.nc
+    FilePatternRule(r'AHI_H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    FilePatternRule(r'AHI_H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    # Himawari L2 NetCDF products
+    FilePatternRule(r'H08.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'satpy_cf_nc', 0.85),
+    FilePatternRule(r'H09.*L2.*\.nc', SatelliteType.H09, ProductLevel.L2, 'satpy_cf_nc', 0.85),
+    FilePatternRule(r'AHI.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'satpy_cf_nc', 0.85),
 ]
 
 # Fallback patterns (lower confidence, generic readers)
 FALLBACK_PATTERNS: List[FilePatternRule] = [
-    (r'FY4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
-    (r'FY-4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
-    (r'FY4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
-    (r'FY-4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
-    (r'FY3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    (r'FY-3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    (r'H08', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.70),
-    (r'H09', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.70),
-    (r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.60),
+    FilePatternRule(r'FY4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
+    FilePatternRule(r'FY-4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
+    FilePatternRule(r'FY4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
+    FilePatternRule(r'FY-4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
+    FilePatternRule(r'FY3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
+    FilePatternRule(r'FY-3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
+    FilePatternRule(r'H08', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.70),
+    FilePatternRule(r'H09', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.70),
+    FilePatternRule(r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.60),
+    # Fallback for NetCDF files
+    FilePatternRule(r'\.nc$', SatelliteType.UNKNOWN, ProductLevel.L1, 'ahi_l1b_gridded', 0.50),
 ]
 
 
