@@ -3,10 +3,13 @@ Fengyun Satellite Driver
 
 Implementation for Fengyun-4A and Fengyun-4B satellite data.
 Supports AGRI L1 data and various L2 products.
+
+satpy dependency removed: data is read directly via core.io.FY4Reader (h5py + LUT calibration).
 """
 import os
 import re
 import glob
+import gc
 import logging
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
@@ -20,6 +23,7 @@ from .base import (
     BandInfo,
     ProcessingParams,
 )
+from ..file_recognizer import get_recommended_reader
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +62,13 @@ class FengYunDriver(BaseSatelliteDriver):
     Driver for Fengyun-4 series satellites.
 
     Supports:
-    - FY-4A AGRI L1 data
-    - FY-4B AGRI L1 data
-    - FY-4B L2 products (Cloud mask, Fog, etc.)
+    - FY-4A AGRI L1 data (HDF5, direct h5py reading via FY4Reader)
+    - FY-4B AGRI L1 data (HDF5, direct h5py reading via FY4Reader)
+    - FY-4B L2 products (NetCDF, xarray via FY4L2Reader)
     """
 
     SATELLITE_TYPE: SatelliteType = SatelliteType.UNKNOWN
-    SUPPORTED_FORMATS = ['.nc', '.h5', '.hdf', '. HDF5']
+    SUPPORTED_FORMATS = ['.nc', '.h5', '.hdf', '.HDF5']
 
     def __init__(self, satellite: str = "FY4A", config: Optional[Dict] = None):
         """
@@ -79,24 +83,21 @@ class FengYunDriver(BaseSatelliteDriver):
             self._satellite_variant = 'FY4A'
 
         # Set satellite type
-        self.SATELLITE_TYPE = SatelliteType.FENGYUN_4A if 'FY4A' in self._satellite_variant else SatelliteType.FENGYUN_4B
+        self.SATELLITE_TYPE = (SatelliteType.FENGYUN_4A
+                               if 'FY4A' in self._satellite_variant
+                               else SatelliteType.FENGYUN_4B)
 
         super().__init__(config)
 
-        # Lazy import flag
-        self._satpy = None
-        self._scenes: List = []
-        self._loaded_reader: Optional[str] = None   # cache for dataset-map reuse
-        self._preferred_reader: Optional[str] = None  # Direct reader recommendation
+        # Direct reader (replaces satpy Scene)
+        self._reader = None          # FY4Reader instance (L1)
+        self._l2_reader = None       # FY4L2Reader instance (L2)
+        self._area_def = None        # pyresample AreaDefinition
+        self._time_groups: Dict[str, List[str]] = {}
 
-    def _set_preferred_reader(self, reader: str) -> None:
-        """
-        Set preferred reader from FileTypeRecognizer.
-        
-        This bypasses the trial-and-error reader detection.
-        """
-        self._preferred_reader = reader
-        logger.info(f"[FengYunDriver] Preferred reader set: {reader}")
+    # ------------------------------------------------------------------
+    # Driver interface implementation
+    # ------------------------------------------------------------------
 
     def _init_driver(self) -> None:
         """Initialize driver-specific resources."""
@@ -116,15 +117,12 @@ class FengYunDriver(BaseSatelliteDriver):
         """Check if file is compatible with Fengyun driver."""
         filename = os.path.basename(file_path).upper()
 
-        # Check for FY-4 satellite markers (FY4B first since FY4A is subset of FY4)
         if 'FY4B' in filename or 'FY-4B' in filename:
             self._satellite_variant = 'FY4B'
             return True
         if 'FY4A' in filename or 'FY-4A' in filename:
             self._satellite_variant = 'FY4A'
             return True
-
-        # Check for AGRI sensor marker
         if 'AGRI' in filename:
             return True
 
@@ -154,124 +152,29 @@ class FengYunDriver(BaseSatelliteDriver):
         return bands
 
     def _detect_product_level(self, file_paths: List[str]) -> ProductLevel:
-        """
-        Detect product level from file paths.
-
-        Args:
-            file_paths: List of file paths
-
-        Returns:
-            Detected ProductLevel
-        """
+        """Detect product level from file paths."""
         for path in file_paths:
             filename = os.path.basename(path).upper()
 
-            # Check for L2 markers (handle patterns like _L1-, _L2-, L1-_FDI, etc.)
             if '_L2' in filename or ('L2' in filename and 'AGRI' in filename):
                 if any(marker in filename for marker in ['CLM', 'FOG', 'CWP', 'CTT', 'SST', 'L2_']):
                     return ProductLevel.L2
 
-            # Check for AGRI L1 data (handle patterns like _L1-_FDI)
             if 'AGRI' in filename:
                 if '_L1' in filename or '_L1-' in filename:
                     return ProductLevel.L1
-                # Default AGRI is L1 if no L2 marker found
                 return ProductLevel.L1
 
-        return ProductLevel.L1  # Default to L1 for AGRI data
-
-    def _detect_reader(self, file_paths: List[str]) -> str:
-        """
-        Detect appropriate Satpy reader for files.
-        Supports multiple reader fallbacks for compatibility.
-
-        Args:
-            file_paths: List of file paths
-
-        Returns:
-            Reader name string
-        """
-        for path in file_paths:
-            filename = os.path.basename(path).upper()
-
-            # FY-4B L2 products often use CF-compliant NetCDF
-            if 'L2' in filename:
-                if 'CLM' in filename or 'FOG' in filename:
-                    return 'satpy_cf_nc'
-                return 'generic_image'
-
-            # AGRI L1 data - check for FY4B first, then FY4A
-            if 'FY4B' in filename or 'FY-4B' in filename or 'AGRI' in filename:
-                # Try reader in order of preference
-                if self._check_reader_available('agri_fy4b'):
-                    return 'agri_fy4b'
-                elif self._check_reader_available('agri_fy4a'):
-                    return 'agri_fy4a'
-                elif self._check_reader_available('generic_image'):
-                    return 'generic_image'
-                else:
-                    return 'agri_fy4a'  # Default fallback
-
-            if 'FY4A' in filename or 'FY-4A' in filename:
-                if self._check_reader_available('agri_fy4a'):
-                    return 'agri_fy4a'
-                elif self._check_reader_available('generic_image'):
-                    return 'generic_image'
-                else:
-                    return 'agri_fy4a'
-
-        # Default reader
-        if self._satellite_variant == 'FY4B':
-            if self._check_reader_available('agri_fy4b'):
-                return 'agri_fy4b'
-            elif self._check_reader_available('generic_image'):
-                return 'generic_image'
-        return 'agri_fy4a'
-
-    def _check_reader_available(self, reader_name: str) -> bool:
-        """
-        Check if a satpy reader is available.
-
-        Args:
-            reader_name: Name of the reader to check
-
-        Returns:
-            True if reader is available
-        """
-        try:
-            if self._satpy is None:
-                self._configure_satpy_logging()
-                import satpy as _satpy_module
-                self._satpy = _satpy_module
-
-            # Check if reader is in available readers
-            available_readers = self._satpy.available_readers()
-            return reader_name in available_readers
-        except Exception:
-            return False
+        return ProductLevel.L1
 
     def _group_files_by_time(self, file_paths: List[str]) -> Dict[str, List[str]]:
-        """
-        Group files by timestamp.
-
-        Args:
-            file_paths: List of file paths
-
-        Returns:
-            Dict mapping timestamp to file list
-        """
+        """Group files by timestamp."""
         groups: Dict[str, List[str]] = {}
 
         for path in sorted(file_paths):
             filename = os.path.basename(path)
-
-            # Try to extract timestamp
-            # Pattern: YYYYMMDD_HHMM
             match = re.search(r'(\d{8}[_-]?\d{4})', filename)
-            if match:
-                ts = match.group(1)
-            else:
-                ts = filename
+            ts = match.group(1) if match else filename
 
             if ts not in groups:
                 groups[ts] = []
@@ -282,6 +185,9 @@ class FengYunDriver(BaseSatelliteDriver):
     def load(self, file_paths: List[str]) -> bool:
         """
         Load Fengyun satellite data from file paths.
+
+        Uses FY4Reader (h5py) for L1 HDF5 data and FY4L2Reader (xarray)
+        for L2 NetCDF products — no satpy required.
 
         Args:
             file_paths: List of paths to satellite data files
@@ -294,155 +200,119 @@ class FengYunDriver(BaseSatelliteDriver):
             return False
 
         try:
-            # Configure logging BEFORE importing satpy
-            if self._satpy is None:
-                self._configure_satpy_logging()
-                import satpy as _satpy_module
-                self._satpy = _satpy_module
+            # Auto-detect satellite variant from filenames
+            for fp in file_paths:
+                name = os.path.basename(fp).upper()
+                if 'FY4B' in name or 'FY-4B' in name:
+                    self._satellite_variant = 'FY4B'
+                    self.SATELLITE_TYPE = SatelliteType.FENGYUN_4B
+                    break
+                if 'FY4A' in name or 'FY-4A' in name:
+                    self._satellite_variant = 'FY4A'
+                    self.SATELLITE_TYPE = SatelliteType.FENGYUN_4A
+                    break
 
             # Detect product level
             self._current_level = self._detect_product_level(file_paths)
-            logger.info(f"Detected product level: {self._current_level.value}")
+            logger.info(f"[FY4] Product level: {self._current_level.value}")
 
             # Group files by time
             time_groups = self._group_files_by_time(file_paths)
-            logger.info(f"Found {len(time_groups)} time groups")
+            logger.info(f"[FY4] Time groups: {len(time_groups)}")
 
-            # Load first time group as primary scene
             if not time_groups:
-                logger.error("No valid time groups found")
+                logger.error("[FY4] No valid time groups found")
                 return False
 
-            primary_time = next(iter(time_groups.keys()))
+            primary_time = next(iter(time_groups))
             primary_files = time_groups[primary_time]
+            primary_file = primary_files[0]
 
-            # Determine reader to use - prioritize preferred reader from FileTypeRecognizer
-            scene = None
-            used_reader = None
-            
-            if self._preferred_reader:
-                # Use FileTypeRecognizer recommendation directly (fast path)
-                logger.info(f"[FastPath] Using FileTypeRecognizer recommendation: {self._preferred_reader}")
-                try:
-                    scene = self._satpy.Scene(
-                        reader=self._preferred_reader,
-                        filenames=primary_files
-                    )
-                    if scene.available_dataset_names():
-                        used_reader = self._preferred_reader
-                        logger.info(f"[FastPath] Success with preferred reader: {used_reader}")
-                except Exception as e:
-                    logger.warning(f"[FastPath] Preferred reader {self._preferred_reader} failed: {e}")
-                    # Clear preferred reader and fall back to detection
-                    self._preferred_reader = None
-            
-            if scene is None:
-                # Fall back to traditional reader detection with fallback chain
-                reader_name = self._detect_reader(file_paths)
-                logger.info(f"Using detected reader: {reader_name}")
+            # Release previous reader
+            self._close_readers()
 
-                # Build fallback chain
-                reader_fallbacks = [reader_name]
-                if reader_name == 'agri_fy4b':
-                    reader_fallbacks = ['agri_fy4a', 'generic_image', 'satpy_cf_nc']
-                elif reader_name == 'agri_fy4a':
-                    reader_fallbacks = ['generic_image']
-
-                for reader in reader_fallbacks:
-                    try:
-                        logger.info(f"Trying reader: {reader}")
-                        scene = self._satpy.Scene(
-                            reader=reader,
-                            filenames=primary_files
-                        )
-                        if scene.available_dataset_names():
-                            used_reader = reader
-                            logger.info(f"Success with reader: {reader}")
-                            break
-                    except Exception as e:
-                        logger.warning(f"Reader {reader} failed: {e}")
-                        continue
-
-            if scene is None or not scene.available_dataset_names():
-                # Last resort: try auto-detection
-                logger.info("Trying auto-detection...")
-                try:
-                    scene = self._satpy.Scene(filenames=primary_files)
-                    used_reader = 'auto'
-                except Exception as e:
-                    logger.error(f"Auto-detection failed: {e}")
-                    return False
-
-            self._scene = scene
-
-            # Build dataset map only when reader changes — band structure is
-            # identical across all frames of the same satellite/reader, so skip
-            # the rebuild on subsequent frame loads (saves ~5-20ms per frame).
-            if used_reader != self._loaded_reader:
+            if self._current_level == ProductLevel.L2:
+                # L2 NetCDF: use xarray-based reader
+                from ..io import FY4L2Reader
+                self._l2_reader = FY4L2Reader(primary_file)
+                self._area_def = self._l2_reader.get_area_definition()
+                self._build_l2_dataset_map()
+                logger.info(f"[FY4] L2 loaded: {list(self._dataset_map.keys())[:5]}")
+            else:
+                # L1 HDF5: use h5py-based reader
+                from ..io import FY4Reader
+                self._reader = FY4Reader(primary_file, satellite=self._satellite_variant)
+                self._area_def = self._reader.get_area_definition()
                 self._build_dataset_map()
-                self._loaded_reader = used_reader
+                logger.info(f"[FY4] L1 loaded: {self._reader.available_bands()}")
 
             self._is_loaded = True
-            logger.info(f"Successfully loaded {len(primary_files)} files with reader: {used_reader}")
-
-            # Store time groups for time-series processing
             self._time_groups = time_groups
-
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load files: {e}")
+            logger.error(f"[FY4] Failed to load files: {e}")
+            import traceback
+            traceback.print_exc()
             self._is_loaded = False
             return False
 
     def _build_dataset_map(self) -> None:
-        """Build mapping from canonical names to dataset names."""
-        if self._scene is None:
-            return
-
+        """Build mapping from canonical names (VIS006) to reader band IDs (C01)."""
         self._dataset_map = {}
         self._band_catalog = {}
 
-        available = self._scene.available_dataset_names()
+        if self._reader is None:
+            return
 
-        for dataset in available:
-            canonical = self._canonical_from_dataset(dataset)
-            self._dataset_map[canonical] = dataset
+        for band_id in self._reader.available_bands():
+            canonical = self._canonical_from_dataset(band_id)
+            self._dataset_map[canonical] = band_id
 
-            # Build band catalog entry
             band_info = BandInfo(
                 canonical_name=canonical,
-                display_name=dataset,
+                display_name=band_id,
+                wavelength=None,
+                resolution=None
+            )
+            self._band_catalog[canonical] = band_info
+
+        logger.debug(f"[FY4] Dataset map: {self._dataset_map}")
+
+    def _build_l2_dataset_map(self) -> None:
+        """Build dataset map for L2 NetCDF variables."""
+        self._dataset_map = {}
+        self._band_catalog = {}
+
+        if self._l2_reader is None:
+            return
+
+        for var_name in self._l2_reader.available_variables():
+            canonical = var_name.upper()
+            self._dataset_map[canonical] = var_name
+
+            band_info = BandInfo(
+                canonical_name=canonical,
+                display_name=var_name,
                 wavelength=None,
                 resolution=None
             )
             self._band_catalog[canonical] = band_info
 
     def _canonical_from_dataset(self, dataset_name: str) -> str:
-        """
-        Convert dataset name to canonical name.
-
-        Args:
-            dataset_name: Satpy dataset name
-
-        Returns:
-            Canonical band name
-        """
-        import re
-
-        # Try Channel pattern (e.g., Channel01 -> VIS006) for FY4A
-        match = re.search(r'Channel(\d{2})', dataset_name, re.IGNORECASE)
-        if match:
-            num = int(match.group(1))
-            return self._channel_to_canonical(num)
-
-        # Try C## pattern (e.g., C01 -> VIS006) for FY4B
+        """Convert reader band ID (C01, Channel01) to canonical name (VIS006)."""
+        # C## pattern (FY-4B style, also used by our FY4Reader)
         match = re.search(r'^C(\d{2})$', dataset_name, re.IGNORECASE)
         if match:
             num = int(match.group(1))
             return self._channel_to_canonical(num)
 
-        # Return as-is if no match
+        # Channel## pattern (FY-4A satpy legacy)
+        match = re.search(r'Channel(\d{2})', dataset_name, re.IGNORECASE)
+        if match:
+            num = int(match.group(1))
+            return self._channel_to_canonical(num)
+
         return dataset_name
 
     def _channel_to_canonical(self, channel_num: int) -> str:
@@ -456,193 +326,146 @@ class FengYunDriver(BaseSatelliteDriver):
         return channel_map.get(channel_num, f'C{channel_num:02d}')
 
     def _extract_canonical_from_display(self, display_name: str) -> str:
-        """
-        Extract canonical band name from display name.
-
-        Args:
-            display_name: Display name (e.g., 'IR133 (13.5 μm)' or 'IR133')
-
-        Returns:
-            Canonical band name (e.g., 'IR133')
-        """
-        # Remove wavelength info in parentheses
-        import re
+        """Extract canonical band name from display name like 'IR133 (13.5 μm)'."""
         match = re.match(r'^([A-Z0-9]+)', display_name.strip())
         if match:
             return match.group(1)
-
-        # Try to extract from patterns like 'IR133 (13.5 μm)'
-        # Just return the first word
         return display_name.split()[0]
-
-    def unload(self) -> None:
-        """Release loaded resources."""
-        if self._scene is not None:
-            try:
-                self._scene = None
-            except Exception:
-                pass
-        self._scenes.clear()
-        self._dataset_map.clear()
-        self._band_catalog.clear()
-        self._is_loaded = False
-        logger.info("Driver resources released")
-
-    def request_image(self, params: ProcessingParams) -> Tuple[np.ndarray, Any]:
-        """
-        Generate image from loaded scene.
-
-        Uses the new ImageProcessingPipeline for memory-efficient processing.
-
-        Args:
-            params: Processing parameters
-
-        Returns:
-            Tuple of (image_array, area_definition)
-        """
-        if not self._is_loaded or self._scene is None:
-            raise ValueError("No scene loaded")
-
-        try:
-            # Map canonical band names to dataset names
-            # Handle both canonical names (IR133) and display names (IR133 (13.5 μm))
-            datasets = []
-            for band in params.bands:
-                # Extract canonical name from display name if needed
-                clean_band = self._extract_canonical_from_display(band)
-                ds_name = self._resolve_dataset_name(clean_band)
-                datasets.append(ds_name)
-
-            logger.info(f"[BandResolve] Requested bands: {params.bands}")
-            logger.info(f"[BandResolve] Cleaned bands: {[self._extract_canonical_from_display(b) for b in params.bands]}")
-            logger.info(f"[BandResolve] Dataset names: {datasets}")
-            logger.info(f"[BandResolve] _dataset_map: {self._dataset_map}")
-            logger.info(f"[BandResolve] Available datasets: {self._scene.available_dataset_names()}")
-
-            # Use pipeline for memory-efficient processing
-            return self._request_image_pipeline(datasets, params)
-
-        except Exception as e:
-            logger.error(f"Failed to generate image: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
 
     def _resolve_dataset_name(self, band_name: str) -> str:
         """
-        Resolve a band name to an actual dataset name in the scene.
+        Resolve a band name to a reader band ID (C01..C14).
 
-        Handles multiple name formats:
-        - Canonical names (IR133)
-        - Short names (C14)
-        - Display names (IR133 (13.5 μm))
-        - Actual dataset names (Channel14)
-
-        Args:
-            band_name: The band name to resolve
-
-        Returns:
-            The actual dataset name in the scene
+        Accepts: canonical names (IR133), short names (C14), channel names (Channel14).
+        Returns: reader band ID like 'C14', or the input unchanged as last resort.
         """
-        # First check if it's already a valid dataset name
-        available = self._scene.available_dataset_names()
+        available = (self._reader.available_bands()
+                     if self._reader is not None
+                     else list(self._dataset_map.values()))
 
+        # Direct match against available IDs
         if band_name in available:
             return band_name
 
-        # Try canonical name mapping
+        # Canonical name → band ID via dataset_map
         if band_name in self._dataset_map:
             ds_name = self._dataset_map[band_name]
             if ds_name in available:
                 return ds_name
 
-        # Try reverse lookup: canonical -> dataset
+        # Reverse lookup
         for canonical, ds_name in self._dataset_map.items():
             if ds_name == band_name:
                 return ds_name
 
-        # Try to find dataset by pattern matching
-        # Handle patterns like C## -> Channel##
-        import re
+        # C## → try available list
         match = re.match(r'^C(\d{2})$', band_name, re.IGNORECASE)
         if match:
-            num = match.group(1)
-            alternatives = [f'Channel{num}', f'C{num}']
-            for alt in alternatives:
-                if alt in available:
-                    return alt
+            cid = f'C{int(match.group(1)):02d}'
+            if cid in available:
+                return cid
 
-        # Try pattern Channel## -> C##
+        # Channel## → C##
         match = re.match(r'^Channel(\d{2})$', band_name, re.IGNORECASE)
         if match:
-            num = match.group(1)
-            alternatives = [f'C{num}', f'Channel{num}']
-            for alt in alternatives:
-                if alt in available:
-                    return alt
+            cid = f'C{int(match.group(1)):02d}'
+            if cid in available:
+                return cid
 
-        # Last resort: try to find any dataset containing the band number
-        match = re.search(r'(\d{2})', band_name)
+        # Numeric-only pattern
+        match = re.search(r'(\d{1,2})', band_name)
         if match:
-            num = match.group(1)
-            for ds in available:
-                if num in ds:
-                    logger.debug(f"Found dataset {ds} for band {band_name}")
-                    return ds
+            cid = f'C{int(match.group(1)):02d}'
+            if cid in available:
+                return cid
 
-        # Fallback: return original and let SatPy raise the error
-        logger.warning(f"Could not resolve band name '{band_name}', using as-is")
+        logger.warning(f"[FY4] Could not resolve band '{band_name}', using as-is")
         return band_name
 
-    def _request_image_pipeline(self, datasets: List[str],
-                               params: ProcessingParams) -> Tuple[np.ndarray, Any]:
-        """
-        Internal pipeline-based image generation.
+    def unload(self) -> None:
+        """Release loaded resources."""
+        self._close_readers()
+        self._dataset_map.clear()
+        self._band_catalog.clear()
+        self._area_def = None
+        self._is_loaded = False
+        logger.info("[FY4] Driver resources released")
 
-        Memory-efficient: Uses Dask for lazy evaluation and chunked processing.
-        Resamples directly to target area without intermediate global products.
+    def _close_readers(self) -> None:
+        """Close reader handles."""
+        if self._reader is not None:
+            try:
+                self._reader.close()
+            except Exception:
+                pass
+            self._reader = None
+        if self._l2_reader is not None:
+            try:
+                self._l2_reader.close()
+            except Exception:
+                pass
+            self._l2_reader = None
+
+    def request_image(self, params: ProcessingParams) -> Tuple[np.ndarray, Any]:
+        """
+        Generate image from loaded data.
 
         Args:
-            datasets: List of dataset names
             params: Processing parameters
 
         Returns:
             Tuple of (image_array, area_definition)
         """
+        if not self._is_loaded:
+            raise ValueError("No data loaded")
+        if self._current_level == ProductLevel.L2 and self._l2_reader is None:
+            raise ValueError("L2 reader not initialised")
+        if self._current_level != ProductLevel.L2 and self._reader is None:
+            raise ValueError("L1 reader not initialised")
+
+        try:
+            # Resolve band names to reader band IDs
+            band_ids = []
+            for band in params.bands:
+                clean = self._extract_canonical_from_display(band)
+                bid = self._resolve_dataset_name(clean)
+                band_ids.append(bid)
+
+            logger.info(f"[FY4] Requested bands: {params.bands} → {band_ids}")
+
+            return self._request_image_pipeline(band_ids, params)
+
+        except Exception as e:
+            logger.error(f"[FY4] Failed to generate image: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def _request_image_pipeline(self, band_ids: List[str],
+                                 params: ProcessingParams) -> Tuple[np.ndarray, Any]:
+        """
+        Internal image-generation pipeline.
+
+        Loads band data via the direct reader, resamples via pyresample,
+        then normalises and composites.
+
+        Args:
+            band_ids: List of reader band IDs (C01..C14) or L2 variable names.
+            params:   Processing parameters.
+
+        Returns:
+            Tuple of (H×W×3 float32 image, area_definition).
+        """
         from ..geometry import create_target_area
 
-        # Load datasets in the scene first
-        try:
-            self._scene.load(datasets)
-        except Exception as e:
-            logger.warning(f"Scene load failed: {e}")
+        source_area = self._area_def
 
-        # Get area from first dataset (needed for adaptive projection)
-        source_area = None
-        try:
-            source_area = self._scene[datasets[0]].attrs.get('area')
-            logger.info(f"Source area: {source_area}")
-        except Exception as e:
-            logger.warning(f"Could not get area from {datasets[0]}: {e}")
-
-        # Create pipeline configuration
-        from ..pipeline import PipelineConfig
-
-        config = PipelineConfig(
-            target_area=None,  # Will be set if resampling
-            resample_method=params.resample_method,
-            gamma=params.gamma,
-            chunk_size=1024,
-            dtype=np.float32,
-        )
-
-        # Determine target area (pass source_area for adaptive extent)
+        # Determine target projection area
         target_area = None
         if params.output_proj != 'geostationary_native':
-            custom_width = None
-            custom_height = None
+            custom_width = custom_height = None
             if params.output_size:
-                custom_width = int(params.output_size[0])
+                custom_width  = int(params.output_size[0])
                 custom_height = int(params.output_size[1])
             target_area = create_target_area(
                 params.output_proj,
@@ -650,409 +473,338 @@ class FengYunDriver(BaseSatelliteDriver):
                 custom_width=custom_width,
                 custom_height=custom_height,
             )
-            config.target_area = target_area
-            if target_area:
-                logger.info(f"Target area created: {params.output_proj}")
 
-        # Create loader function
-        def load_band(band_name: str) -> np.ndarray:
-            """Load band data as numpy array (will be converted to Dask)."""
+        # Define band loader
+        def load_band(band_id: str) -> np.ndarray:
+            """Load calibrated band data as float32 numpy array."""
             try:
-                logger.info(f"[LoadBand] Loading band: {band_name}")
-                data = self._scene[band_name]
-                logger.info(f"  Data type: {type(data)}")
-                logger.info(f"  Data shape: {data.sizes if hasattr(data, 'sizes') else 'N/A'}")
-                arr = data.values.astype(np.float32)
-                nan_count = np.sum(np.isnan(arr))
-                logger.info(f"  Array shape: {arr.shape}, min={np.nanmin(arr):.4f}, max={np.nanmax(arr):.4f}, NaN count={nan_count}")
-                return arr
-            except Exception as e:
-                logger.error(f"Failed to load band {band_name}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Return zeros as fallback
-                return np.zeros((2748, 2748), dtype=np.float32)
+                if self._current_level == ProductLevel.L2:
+                    return self._l2_reader.load_variable(band_id)
+                else:
+                    return self._reader.load_band(band_id)
+            except Exception as exc:
+                logger.error(f"[FY4] load_band({band_id}) failed: {exc}")
+                return np.zeros((1, 1), dtype=np.float32)
 
-        # Build processing pipeline
-        from ..pipeline import ImageProcessingPipeline
+        # Load all bands
+        band_data: Dict[str, np.ndarray] = {}
+        for bid in band_ids:
+            band_data[bid] = load_band(bid)
+            logger.debug(f"[FY4] Loaded {bid}: shape={band_data[bid].shape}")
 
-        logger.info(f"Building pipeline for bands: {datasets}")
-        logger.info(f"Output projection: {params.output_proj}")
+        # Resample to target area if required
+        if target_area is not None and source_area is not None:
+            band_data = self._resample_bands(band_data, source_area, target_area,
+                                             params.resample_method)
+            result_area = target_area
+        else:
+            result_area = source_area
 
-        pipeline = ImageProcessingPipeline()
+        # Composite / process
+        if len(band_ids) == 3:
+            r = band_data.get(band_ids[0], np.zeros((1, 1), dtype=np.float32))
+            g = band_data.get(band_ids[1], np.zeros((1, 1), dtype=np.float32))
+            b = band_data.get(band_ids[2], np.zeros((1, 1), dtype=np.float32))
+            img = self._process_rgb(r, g, b, params.gamma)
+        else:
+            raw = band_data.get(band_ids[0], np.zeros((1, 1), dtype=np.float32))
+            img = self._process_single(raw, params.gamma, band_ids[0])
 
-        # Stage 1: Load
-        pipeline.load(load_band, datasets)
+        return img, result_area
 
-        # Stage 2: Resample directly to target area (if needed)
-        if target_area is not None:
-            logger.info(f"Resampling to target area: {params.output_proj}")
-            pipeline.resample(
-                target_area,
-                resample_method=params.resample_method
-            )
-
-        # Stage 3: Normalize
-        logger.info("Normalizing bands (2-98 percentile)")
-        pipeline.normalize(low_percent=2.0, high_percent=98.0)
-
-        # Stage 4: Composite
-        if len(datasets) == 3:
-            logger.info(f"Compositing RGB: {datasets[:3]}")
-            pipeline.composite(datasets[:3])
-
-        # Execute pipeline (lazy)
-        logger.info("Executing pipeline...")
-        pipeline.execute()
-
-        # Compute result
-        logger.info("Computing result...")
-        img = pipeline.compute()
-        logger.info(f"Computed image shape: {img.shape}, dtype: {img.dtype}")
-        logger.info(f"Image stats: min={np.nanmin(img):.6f}, max={np.nanmax(img):.6f}")
-
-        # Ensure we have area for return (use target_area or fall back to source_area)
-        if target_area is None:
-            try:
-                target_area = source_area
-            except Exception:
-                target_area = None
-
-        return img, target_area
-
-    def export_image_pipeline(self, bands: List[str],
-                            output_path: str,
-                            proj_name: str = 'plate_carree_china',
-                            export_format: str = 'png',
-                            gamma: float = 1.0,
-                            region: str = 'china',
-                            calibration: bool = False) -> Dict:
+    def _resample_bands(
+        self,
+        band_data: Dict[str, np.ndarray],
+        source_area,
+        target_area,
+        method: str = 'nearest',
+    ) -> Dict[str, np.ndarray]:
         """
-        Export image using memory-efficient pipeline.
-
-        Key optimizations:
-        1. Resamples directly to target area (no intermediate global)
-        2. Uses Dask for lazy evaluation
-        3. Computes directly to file (doesn't hold full result in memory)
+        Resample all bands from source_area to target_area via pyresample.
 
         Args:
-            bands: List of band names
-            output_path: Output file path
-            proj_name: Projection name
-            export_format: Output format ('png', 'geotiff')
-            gamma: Gamma correction
-            region: Geographic region for cropping
-            calibration: Whether to apply calibration
+            band_data:   Dict of band_id → 2-D float32 array (H×W).
+            source_area: Source pyresample AreaDefinition.
+            target_area: Target pyresample AreaDefinition.
+            method:      Resampling method ('nearest' or 'bilinear').
 
         Returns:
-            Dict with status and details
+            Dict of band_id → resampled float32 array.
         """
-        import os
-        import gc
-        from PIL import Image
-        from ..geometry import create_target_area, ProjectionFactory
-        from ..pipeline import Pipeline, PipelineConfig
-
-        if not self._is_loaded or self._scene is None:
-            raise ValueError("No scene loaded")
-
         try:
-            # Memory cleanup before starting
-            gc.collect()
-
-            # Map band names
-            clean_bands = []
-            for band in bands:
-                clean_band = self._extract_canonical_from_display(band)
-                ds_name = self._dataset_map.get(clean_band, band)
-                clean_bands.append(ds_name)
-
-            logger.info(f"Exporting bands: {clean_bands}")
-
-            # Determine target area and output shape
-            target_area = None
-            output_shape = None
-
-            if proj_name != 'geostationary_native':
-                if region != 'global':
-                    # Create custom area for region
-                    reg_info = {
-                        'china': (70, 142, 15, 55),
-                        'east_asia': (70, 150, 0, 60),
-                        'southeast_asia': (90, 140, -10, 25),
-                    }
-                    if region in reg_info:
-                        west, east, south, north = reg_info[region]
-                        resolution = 0.05  # ~5km
-                        width = int((east - west) / resolution)
-                        height = int((north - south) / resolution)
-                        output_shape = (height, width)
-
-                        target_area = ProjectionFactory.create_from_extent(
-                            name=f'export_{region}',
-                            west=west, east=east, south=south, north=north,
-                            resolution=resolution
-                        )
-                else:
-                    target_area = create_target_area(proj_name)
-                    proj_config = ProjectionFactory.get_config(proj_name)
-                    if proj_config:
-                        output_shape = (proj_config.height, proj_config.width)
-
-            # Load bands
-            band_data = {}
-            for band in clean_bands:
-                arr = self._scene[band].values.astype(np.float32)
-                band_data[band] = arr
-
-            # Apply calibration if requested
-            if calibration:
-                for i, band in enumerate(clean_bands):
-                    try:
-                        # Simplified calibration
-                        arr_min, arr_max = band_data[band].min(), band_data[band].max()
-                        if arr_max > arr_min:
-                            band_data[band] = (band_data[band] - arr_min) / (arr_max - arr_min)
-                    except Exception as e:
-                        logger.warning(f"Calibration failed for {band}: {e}")
-
-            # Resample if needed (directly to target area)
-            if target_area is not None:
-                from pyresample import geometry as _geom
-
-                # Create target arrays
-                target_shape = output_shape or (1000, 1000)
-                height, width = target_shape
-
-                # Create target coordinate grids
-                extent = target_area.area_extent
-                x_coords = np.linspace(extent[0], extent[2], width)
-                y_coords = np.linspace(extent[3], extent[1], height)
-                x_grid, y_grid = np.meshgrid(x_coords, y_coords)
-
-                # Resample each band directly to target area
-                resampled_data = {}
-                for band, arr in band_data.items():
-                    try:
-                        # Get source coordinates
-                        source_area = self._scene[band].attrs.get('area')
-                        if hasattr(source_area, 'get_lonlats'):
-                            src_lons, src_lats = source_area.get_lonlats()
-                        else:
-                            continue
-
-                        # Nearest neighbor resampling
-                        from scipy.spatial import cKDTree
-
-                        src_flat = np.column_stack([src_lons.ravel(), src_lats.ravel()])
-                        tgt_flat = np.column_stack([x_grid.ravel(), y_grid.ravel()])
-
-                        tree = cKDTree(src_flat)
-                        _, indices = tree.query(tgt_flat, k=1)
-
-                        resampled = arr.ravel()[indices].reshape(height, width)
-                        resampled_data[band] = resampled
-
-                    except Exception as e:
-                        logger.warning(f"Resampling failed for {band}: {e}")
-                        resampled_data[band] = np.zeros(target_shape, dtype=np.float32)
-
-                band_data = resampled_data
-
-            # Composite
-            if len(clean_bands) == 3:
-                # RGB composite
-                r = band_data.get(clean_bands[0], np.zeros(output_shape or (1000, 1000)))
-                g = band_data.get(clean_bands[1], np.zeros(output_shape or (1000, 1000)))
-                b = band_data.get(clean_bands[2], np.zeros(output_shape or (1000, 1000)))
-
-                # Normalize
-                for arr in [r, g, b]:
-                    arr_min, arr_max = arr.min(), arr.max()
-                    if arr_max > arr_min:
-                        arr[...] = (arr - arr_min) / (arr_max - arr_min)
-
-                img = np.stack([r, g, b], axis=-1)
-            else:
-                # Single band
-                img = band_data.get(clean_bands[0], np.zeros((1000, 1000), dtype=np.float32))
-                if img.ndim == 2:
-                    img = np.stack([img] * 3, axis=-1)
-
-            # Apply gamma
-            if gamma != 1.0:
-                img = np.power(np.clip(img, 0, 1), 1.0 / gamma)
-
-            # Ensure proper dtype
-            img = np.clip(img, 0, 1).astype(np.float32)
-
-            # Save
-            os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-
-            if export_format == 'png':
-                img_uint8 = (img * 255).astype(np.uint8)
-                if img_uint8.ndim == 3 and img_uint8.shape[2] == 4:
-                    # RGBA to RGB
-                    from PIL import Image as PILImage
-                    pil_img = PILImage.fromarray(img_uint8, mode='RGBA')
-                    rgb_img = pil_img.convert('RGB')
-                    rgb_img.save(output_path)
-                elif img_uint8.ndim == 3:
-                    PILImage.fromarray(img_uint8, mode='RGB').save(output_path)
-                else:
-                    PILImage.fromarray(img_uint8, mode='L').save(output_path)
-
-            elif export_format == 'geotiff':
-                self._save_geotiff_with_pipeline(img, output_path, target_area)
-
-            # Memory cleanup
-            del band_data, img
-            gc.collect()
-
-            return {
-                'status': 'success',
-                'path': output_path,
-                'shape': img.shape if 'img' in dir() else 'unknown'
-            }
-
-        except Exception as e:
-            logger.error(f"Export failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'status': 'error', 'message': str(e)}
-
-    def _save_geotiff_with_pipeline(self, img: np.ndarray,
-                                   output_path: str,
-                                   target_area: Any) -> None:
-        """Save image as GeoTIFF using pipeline approach."""
-        try:
-            from osgeo import gdal, osr
-            import os
-
-            os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-
-            # Get dimensions
-            if img.ndim == 3:
-                height, width, bands = img.shape
-            else:
-                height, width = img.shape
-                bands = 1
-
-            # Create driver
-            driver = gdal.GetDriverByName('GTiff')
-            options = ['COMPRESS=LZW', 'TILED=YES', 'BLOCKXSIZE=256', 'BLOCKYSIZE=256']
-            out_ds = driver.Create(
-                output_path, width, height, bands,
-                gdal.GDT_Float32,
-                options=options
-            )
-
-            # Set geotransform
-            if target_area and hasattr(target_area, 'area_extent'):
-                extent = target_area.area_extent
-                x_res = (extent[2] - extent[0]) / width
-                y_res = (extent[3] - extent[1]) / height
-                geotransform = (extent[0], x_res, 0, extent[3], 0, -y_res)
-                out_ds.SetGeoTransform(geotransform)
-
-                # Set projection
-                srs = osr.SpatialReference()
-                srs.ImportFromEPSG(4326)
-                out_ds.SetProjection(srs.ExportToWkt())
-
-            # Write data
-            if img.ndim == 3:
-                for i in range(bands):
-                    out_ds.GetRasterBand(i + 1).WriteArray(img[:, :, i])
-            else:
-                out_ds.GetRasterBand(1).WriteArray(img)
-
-            out_ds = None
-            logger.info(f"Saved GeoTIFF: {output_path}")
-
+            from pyresample.kd_tree import resample_nearest
         except ImportError:
-            logger.error("GDAL not available")
-            raise
-        except Exception as e:
-            logger.error(f"GeoTIFF save failed: {e}")
-            raise
-            raise
+            logger.warning("[FY4] pyresample not available; skipping resampling")
+            return band_data
+
+        # bilinear lives in pyresample.bilinear (not kd_tree) in modern pyresample
+        _bilinear_fn = None
+        if method == 'bilinear':
+            try:
+                from pyresample.bilinear import resample_bilinear as _bilinear_fn
+            except ImportError:
+                pass  # fall back to nearest
+
+        resampled: Dict[str, np.ndarray] = {}
+        for bid, arr in band_data.items():
+            try:
+                if _bilinear_fn is not None:
+                    out = _bilinear_fn(
+                        arr, source_area, target_area,
+                        radius=50000, fill_value=np.nan
+                    )
+                else:
+                    out = resample_nearest(
+                        source_area, arr, target_area,
+                        radius_of_influence=50000,
+                        fill_value=np.nan
+                    )
+                resampled[bid] = out.astype(np.float32)
+            except Exception as exc:
+                logger.warning(f"[FY4] Resample failed for {bid}: {exc}")
+                resampled[bid] = arr
+        return resampled
 
     def _process_rgb(self, r: np.ndarray, g: np.ndarray, b: np.ndarray,
                      gamma: float) -> np.ndarray:
-        """Process RGB bands."""
-        # Normalize each band
-        def normalize(arr):
-            arr_min, arr_max = np.nanmin(arr), np.nanmax(arr)
-            if arr_max - arr_min > 0:
-                return (arr - arr_min) / (arr_max - arr_min)
-            return arr
+        """Process RGB bands: percentile normalisation + gamma + stack."""
+        def norm(arr: np.ndarray) -> np.ndarray:
+            valid = arr[np.isfinite(arr)]
+            if valid.size == 0:
+                return np.zeros_like(arr)
+            lo, hi = np.percentile(valid, 2), np.percentile(valid, 98)
+            if hi > lo:
+                out = (arr - lo) / (hi - lo)
+            else:
+                out = np.zeros_like(arr)
+            return np.clip(out, 0.0, 1.0)
 
-        r = normalize(r)
-        g = normalize(g)
-        b = normalize(b)
-
-        # Apply gamma correction
+        r, g, b = norm(r), norm(g), norm(b)
         if gamma != 1.0:
             r = np.power(np.clip(r, 0, 1), 1.0 / gamma)
             g = np.power(np.clip(g, 0, 1), 1.0 / gamma)
             b = np.power(np.clip(b, 0, 1), 1.0 / gamma)
 
-        # Stack as RGB
         img = np.stack([r, g, b], axis=-1)
+        return np.nan_to_num(img, nan=0.0).astype(np.float32)
 
-        # Handle NaN
-        img = np.nan_to_num(img, nan=0.0)
+    def _process_single(self, data: np.ndarray, gamma: float,
+                         band_id: str = '') -> np.ndarray:
+        """Process single band: normalisation + gamma + grayscale→RGB."""
+        # Detect thermal bands by channel number
+        is_thermal = False
+        m = re.match(r'^C(\d{2})$', band_id)
+        if m and int(m.group(1)) >= 7:
+            is_thermal = True
 
-        return img
-
-    def _process_single(self, data: np.ndarray, gamma: float) -> np.ndarray:
-        """Process single band."""
-        data_min, data_max = np.nanmin(data), np.nanmax(data)
-        if data_max - data_min > 0:
-            norm = (data - data_min) / (data_max - data_min)
+        valid = data[np.isfinite(data)]
+        if valid.size == 0:
+            norm = np.zeros_like(data)
+        elif is_thermal:
+            # BT in K: fixed physical range
+            lo, hi = 200.0, 320.0
+            norm = np.clip((data - lo) / (hi - lo), 0.0, 1.0)
         else:
-            norm = data
+            lo, hi = np.percentile(valid, 2), np.percentile(valid, 98)
+            norm = np.clip((data - lo) / (hi - lo), 0.0, 1.0) if hi > lo else np.zeros_like(data)
 
         if gamma != 1.0:
             norm = np.power(np.clip(norm, 0, 1), 1.0 / gamma)
 
         img = np.stack([norm] * 3, axis=-1)
-        img = np.nan_to_num(img, nan=0.0)
-
-        return img
+        return np.nan_to_num(img, nan=0.0).astype(np.float32)
 
     def get_metadata(self) -> Dict[str, Any]:
-        """Get standardized metadata."""
-        if self._scene is None:
+        """Get standardised metadata."""
+        if not self._is_loaded:
             return {}
 
-        try:
-            start_time = self._scene.start_time
-            platform = self._scene.attrs.get('platform_name', self._satellite_variant)
-            sensor = self._scene.attrs.get('sensor', 'AGRI')
-        except Exception:
-            start_time = None
-            platform = self._satellite_variant
-            sensor = 'AGRI'
-
-        return {
-            'satellite': platform,
-            'sensor': sensor,
+        meta: Dict[str, Any] = {
+            'satellite': self._satellite_variant,
+            'sensor': 'AGRI',
             'satellite_type': self._satellite_variant,
-            'product_level': self._current_level.value if self._current_level else 'UNKNOWN',
-            'start_time': start_time.strftime("%Y-%m-%d %H:%M:%S") if start_time else "N/A",
+            'product_level': self._current_level.value,
             'n_bands': len(self._dataset_map),
             'is_loaded': self._is_loaded,
         }
+
+        if self._reader is not None:
+            reader_meta = self._reader.get_metadata()
+            meta.update({
+                'start_time': reader_meta.get('start_time', 'N/A'),
+                'data_format': 'L1_HDF5',
+            })
+        elif self._l2_reader is not None:
+            reader_meta = self._l2_reader.get_metadata()
+            meta.update({
+                'start_time': reader_meta.get('start_time', 'N/A'),
+                'data_format': 'L2_NetCDF',
+            })
+
+        return meta
 
     def get_satellite_coverage(self) -> Optional[Tuple[float, float, float, float]]:
         """Get geographic coverage for this satellite."""
         return SATELLITE_COVERAGE.get(self.SATELLITE_TYPE)
 
     def get_time_series_groups(self, file_paths: List[str]) -> List[List[str]]:
-        """Get file groups organized by timestamp."""
-        return list(self._group_files_by_time(file_paths).values())
+        """Get file groups organised by timestamp."""
+        groups = self._group_files_by_time(file_paths)
+        return list(groups.values())
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def export_image_pipeline(self, bands: List[str],
+                               output_path: str,
+                               proj_name: str = 'plate_carree_china',
+                               export_format: str = 'png',
+                               gamma: float = 1.0,
+                               region: str = 'china',
+                               calibration: bool = False) -> Dict:
+        """
+        Export image to PNG or GeoTIFF.
+
+        Args:
+            bands: List of band names (canonical or display form)
+            output_path: Destination file path
+            proj_name: Projection name for resampling
+            export_format: 'png' or 'geotiff'
+            gamma: Gamma correction
+            region: Geographic region for cropping
+            calibration: (unused; data is always calibrated by FY4Reader)
+
+        Returns:
+            Dict with 'status' and 'path'.
+        """
+        if not self._is_loaded:
+            raise ValueError("No data loaded")
+
+        try:
+            gc.collect()
+
+            # Resolve band names
+            band_ids = []
+            for band in bands:
+                clean = self._extract_canonical_from_display(band)
+                bid = self._resolve_dataset_name(clean)
+                band_ids.append(bid)
+
+            logger.info(f"[FY4 Export] Bands: {bands} → {band_ids}")
+
+            # Determine export area
+            from ..geometry import create_target_area, ProjectionFactory
+            target_area = None
+
+            if proj_name != 'geostationary_native':
+                reg_info = {
+                    'china':        (70, 142, 15, 55),
+                    'east_asia':    (70, 150, 0, 60),
+                    'southeast_asia': (90, 140, -10, 25),
+                }
+                if region in reg_info:
+                    west, east, south, north = reg_info[region]
+                    resolution = 0.05
+                    width  = int((east - west) / resolution)
+                    height = int((north - south) / resolution)
+                    target_area = ProjectionFactory.create_from_extent(
+                        name=f'export_{region}',
+                        west=west, east=east, south=south, north=north,
+                        resolution=resolution
+                    )
+                else:
+                    target_area = create_target_area(proj_name)
+
+            # Load all bands
+            band_data: Dict[str, np.ndarray] = {}
+            for bid in band_ids:
+                try:
+                    if self._current_level == ProductLevel.L2:
+                        band_data[bid] = self._l2_reader.load_variable(bid)
+                    else:
+                        band_data[bid] = self._reader.load_band(bid)
+                except Exception as exc:
+                    logger.warning(f"[FY4 Export] load {bid} failed: {exc}")
+                    band_data[bid] = np.zeros((1, 1), dtype=np.float32)
+
+            # Resample
+            if target_area is not None and self._area_def is not None:
+                band_data = self._resample_bands(band_data, self._area_def,
+                                                 target_area, 'nearest')
+
+            # Composite
+            if len(band_ids) == 3:
+                r = band_data.get(band_ids[0], np.zeros((1, 1)))
+                g = band_data.get(band_ids[1], np.zeros((1, 1)))
+                b = band_data.get(band_ids[2], np.zeros((1, 1)))
+                img = self._process_rgb(r, g, b, gamma)
+            else:
+                raw = band_data.get(band_ids[0], np.zeros((1, 1)))
+                img = self._process_single(raw, gamma, band_ids[0])
+
+            img = np.clip(img, 0.0, 1.0).astype(np.float32)
+
+            # Save
+            os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+
+            if export_format == 'png':
+                from PIL import Image as PILImage
+                img_u8 = (img * 255).astype(np.uint8)
+                PILImage.fromarray(img_u8, mode='RGB').save(output_path)
+            elif export_format == 'geotiff':
+                self._save_geotiff_with_pipeline(img, output_path, target_area or self._area_def)
+
+            del band_data, img
+            gc.collect()
+
+            return {'status': 'success', 'path': output_path}
+
+        except Exception as exc:
+            logger.error(f"[FY4 Export] Failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            return {'status': 'error', 'message': str(exc)}
+
+    def _save_geotiff_with_pipeline(self, img: np.ndarray,
+                                    output_path: str,
+                                    area_def: Any) -> None:
+        """Save image as GeoTIFF."""
+        try:
+            from osgeo import gdal, osr
+
+            if img.ndim == 3:
+                height, width, n_bands = img.shape
+            else:
+                height, width = img.shape
+                n_bands = 1
+
+            driver = gdal.GetDriverByName('GTiff')
+            options = ['COMPRESS=LZW', 'TILED=YES', 'BLOCKXSIZE=256', 'BLOCKYSIZE=256']
+            out_ds = driver.Create(output_path, width, height, n_bands,
+                                   gdal.GDT_Float32, options=options)
+
+            if area_def is not None and hasattr(area_def, 'area_extent'):
+                extent = area_def.area_extent
+                x_res = (extent[2] - extent[0]) / width
+                y_res = (extent[3] - extent[1]) / height
+                out_ds.SetGeoTransform((extent[0], x_res, 0, extent[3], 0, -y_res))
+
+                srs = osr.SpatialReference()
+                srs.ImportFromProj4('+proj=longlat +datum=WGS84')
+                out_ds.SetProjection(srs.ExportToWkt())
+
+            for i in range(n_bands):
+                band_arr = img[:, :, i] if img.ndim == 3 else img
+                out_ds.GetRasterBand(i + 1).WriteArray(band_arr)
+
+            out_ds.FlushCache()
+            out_ds = None
+
+        except ImportError:
+            logger.warning("[FY4] GDAL not available; cannot save GeoTIFF")
+        except Exception as exc:
+            logger.error(f"[FY4] GeoTIFF save failed: {exc}")
 
     @property
     def satellite_variant(self) -> str:

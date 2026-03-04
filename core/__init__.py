@@ -22,9 +22,6 @@ from .exceptions import (
     PipelineError, BandNotFoundError,
 )
 
-# Legacy exports for backward compatibility
-from .satpy_driver import SatpyDriver
-from .interfaces import ISatelliteDataProvider
 from .image_proc import ImageProcessor, normalize_percentile, apply_gamma
 
 __all__ = [
@@ -72,9 +69,7 @@ __all__ = [
     'UnsupportedExportFormatError',
     'PipelineError',
     'BandNotFoundError',
-    # Legacy
-    'SatpyDriver',
-    'ISatelliteDataProvider',
+    # Image processing
     'ImageProcessor',
     'normalize_percentile',
     'apply_gamma',

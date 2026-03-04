@@ -93,7 +93,7 @@ class SatelliteImageManager:
             return sorted(all_files)
 
         # Default: single-pass scandir is ~7× faster than 7 separate glob calls
-        EXTS = {'.nc', '.NC', '.dat', '.DAT', '.bz2', '.h5', '.HDF'}
+        EXTS = {'.nc', '.NC', '.dat', '.DAT', '.bz2', '.h5', '.H5', '.hdf', '.HDF'}
         all_files = []
         try:
             with os.scandir(directory) as it:
@@ -176,11 +176,27 @@ class SatelliteImageManager:
                 requested_type = pinned_driver_type or driver_type
                 current_type = self._infer_current_driver_type()
                 target_type = requested_type or current_type
+                # Always compute reader hint once so explicit driver mode can also use smart path.
+                recommended_reader = get_recommended_reader(file_paths)
+                if recommended_reader:
+                    self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_reader}")
+
+                # Resolve the driver type implied by the recommended reader so that
+                # switching satellite type (e.g. FY-4 → FY-3D) always creates a fresh driver.
+                recommended_driver = None
+                if recommended_reader and recommended_reader != 'auto':
+                    recommended_driver = DriverFactory._reader_to_driver_type(recommended_reader)
+                    if recommended_driver is None:
+                        recommended_driver = DriverFactory._infer_driver_type_from_generic_reader(
+                            file_paths, recommended_reader
+                        )
 
                 should_reuse = (
                     reuse_session and
                     self._driver is not None and
-                    (target_type is None or current_type == target_type)
+                    (target_type is None or current_type == target_type) and
+                    # Don't reuse if the recognizer says we've switched satellite families
+                    (recommended_driver is None or current_type == recommended_driver)
                 )
 
                 if not should_reuse:
@@ -188,11 +204,6 @@ class SatelliteImageManager:
                         self._driver = DriverFactory.create_driver(requested_type)
                         self._driver_type = requested_type
                     else:
-                        # Use smart file recognition for direct reader mapping
-                        recommended_reader = get_recommended_reader(file_paths)
-                        if recommended_reader:
-                            self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_reader}")
-                        
                         self._driver = DriverFactory.create_from_files(
                             file_paths, 
                             auto_detect=auto_detect,

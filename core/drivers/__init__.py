@@ -204,12 +204,10 @@ class DriverFactory:
             
             # Determine driver type from reader name
             driver_type = cls._reader_to_driver_type(preferred_reader)
+            if driver_type is None:
+                driver_type = cls._infer_driver_type_from_generic_reader(file_paths, preferred_reader)
             if driver_type:
-                driver = cls.create_driver(driver_type)
-                # Pass reader hint to driver
-                if hasattr(driver, '_set_preferred_reader'):
-                    driver._set_preferred_reader(preferred_reader)
-                return driver
+                return cls.create_driver(driver_type)
         
         if auto_detect:
             file_info_list = cls.identify_files(file_paths)
@@ -242,23 +240,47 @@ class DriverFactory:
     @classmethod
     def _reader_to_driver_type(cls, reader_name: str) -> Optional[str]:
         """
-        Map reader name to driver type.
-        
+        Map format identifier to driver type.
+
         Args:
-            reader_name: Satpy reader name (e.g., 'agri_fy4b')
-            
+            reader_name: Format identifier returned by FileTypeRecognizer
+                         (e.g., 'agri_fy4b', 'ahi_l1b_gridded')
+
         Returns:
-            Driver type key or None
+            Driver type key or None if not directly mapped
         """
         reader_map = {
             'agri_fy4b': 'fengyun',
             'agri_fy4a': 'fengyun',
-            'ahi_hsd': 'himawari',
             'ahi_l1b_gridded': 'himawari',
             'mersi2_l1b': 'fengyun3d',
             'mersi_l1b': 'fengyun3d',
         }
         return reader_map.get(reader_name)
+
+    @classmethod
+    def _infer_driver_type_from_generic_reader(cls, file_paths: List[str], reader_name: str) -> Optional[str]:
+        """
+        Infer driver type from filename patterns when reader_name is not in the direct map.
+
+        Args:
+            file_paths: Input data file list
+            reader_name: Format identifier that was not directly mapped
+
+        Returns:
+            Driver type key or None
+        """
+        if not file_paths:
+            return None
+
+        joined = " ".join(file_paths).upper()
+        if any(token in joined for token in ('FY4', 'FY-4', 'FY_4', 'AGRI')):
+            return 'fengyun'
+        if any(token in joined for token in ('H08', 'H09', 'HIMAWARI', 'AHI')):
+            return 'himawari'
+        if any(token in joined for token in ('FY3', 'FY-3', 'MERSI')):
+            return 'fengyun3d'
+        return None
     
     @classmethod
     def create_with_smart_recognition(cls, file_paths: List[str]) -> BaseSatelliteDriver:

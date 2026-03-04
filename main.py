@@ -5,6 +5,19 @@ import logging
 # Ensure project root is in path.
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Windows: add all conda env DLL directories so h5py can find hdf5.dll and its
+# transitive deps.  Git Bash conda-activate only adds Scripts/, not Library/bin.
+# The bundled h5py/hdf5.dll is renamed .bak so Windows searches here instead.
+if sys.platform == "win32":
+    for _d in (
+        sys.prefix,
+        os.path.join(sys.prefix, "Library", "bin"),
+        os.path.join(sys.prefix, "Library", "mingw-w64", "bin"),
+        os.path.join(sys.prefix, "Library", "usr", "bin"),
+    ):
+        if os.path.isdir(_d):
+            os.add_dll_directory(_d)
+
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
 from ui.style import get_theme_qss

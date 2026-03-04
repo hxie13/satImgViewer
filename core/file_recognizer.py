@@ -1,7 +1,7 @@
 """
 Smart File Type Recognizer
 
-Directly maps filename patterns to specific satpy readers,
+Directly maps filename patterns to format identifiers used by the driver factory,
 eliminating the need for trial-and-error fallback chain.
 """
 import re
@@ -41,6 +41,10 @@ class FileRecognitionResult:
     confidence: float  # 0.0 - 1.0
     timestamp: Optional[str] = None
     resolution: Optional[str] = None  # e.g., "4000M", "1000M"
+    sensor: Optional[str] = None
+    product: Optional[str] = None
+    region: Optional[str] = None
+    file_format: Optional[str] = None
     
     @property
     def is_valid(self) -> bool:
@@ -64,35 +68,21 @@ class FilePatternRule:
 # =============================================================================
 
 FILE_PATTERNS: List[FilePatternRule] = [
-    # FY-4B AGRI L1 - Full Disk
-    FilePatternRule(r'FY4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
-    FilePatternRule(r'FY-4B.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
-    # FY-4B AGRI L1 - China region
-    FilePatternRule(r'FY4B.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
-    # FY-4B AGRI L2 products
-    FilePatternRule(r'FY4B.*AGRI.*L2.*CLM.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    FilePatternRule(r'FY4B.*AGRI.*L2.*FOG.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    FilePatternRule(r'FY4B.*AGRI.*L2.*CWP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    FilePatternRule(r'FY4B.*AGRI.*L2.*CTT.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    FilePatternRule(r'FY4B.*AGRI.*L2.*CTP.*\.HDF', SatelliteType.FY4B, ProductLevel.L2, 'satpy_cf_nc', 0.90),
-    
+    # FY-4B AGRI L1 (historical naming variants)
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.97),
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
+    # FY-4B AGRI L2 products (mostly CF-like)
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L2.*(CLM|FOG|CWP|CTT|CTP|ACHA|ACSF|SST|LST).*\.(HDF5?|NC)$', SatelliteType.FY4B, ProductLevel.L2, 'generic_nc', 0.93),
+
     # FY-4A AGRI L1
-    FilePatternRule(r'FY4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
-    FilePatternRule(r'FY-4A.*AGRI.*L1.*FDI.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
-    FilePatternRule(r'FY4A.*AGRI.*L1.*CNR.*\d{14}.*\.HDF', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
-    
+    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.97),
+    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
+
     # FY-3D MERSI L1
-    FilePatternRule(r'FY3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
-    FilePatternRule(r'FY-3D.*MERSI.*L1.*\d{8}.*\d{4}.*\.HDF', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.95),
-    
-    # Himawari-8 HSD (Standard format)
-    FilePatternRule(r'HS_H08_\d{8}_\d{4}.*\.DAT', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
-    FilePatternRule(r'HS_H08_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.95),
-    # Himawari-9 HSD (Standard format)
-    FilePatternRule(r'HS_H09_\d{8}_\d{4}.*\.DAT', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
-    FilePatternRule(r'HS_H09_\d{8}_\d{4}.*\.DAT\.bz2', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.95),
-    
+    FilePatternRule(r'FY[-_]?3D.*MERSI.*L1.*\d{8}[_-]?\d{4}.*\.(HDF5?|H5)$', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.96),
+
     # Himawari NetCDF formats (various naming conventions)
+    # Note: HSD binary (.dat/.bz2) format is not supported
     # Standard gridded format: H08_20230101_0300_xxx.nc
     FilePatternRule(r'H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
     FilePatternRule(r'H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
@@ -100,22 +90,25 @@ FILE_PATTERNS: List[FilePatternRule] = [
     FilePatternRule(r'AHI_H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
     FilePatternRule(r'AHI_H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
     # Himawari L2 NetCDF products
-    FilePatternRule(r'H08.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'satpy_cf_nc', 0.85),
-    FilePatternRule(r'H09.*L2.*\.nc', SatelliteType.H09, ProductLevel.L2, 'satpy_cf_nc', 0.85),
-    FilePatternRule(r'AHI.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'satpy_cf_nc', 0.85),
+    FilePatternRule(r'H08.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'generic_nc', 0.85),
+    FilePatternRule(r'H09.*L2.*\.nc', SatelliteType.H09, ProductLevel.L2, 'generic_nc', 0.85),
+    FilePatternRule(r'AHI.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'generic_nc', 0.85),
 ]
 
 # Fallback patterns (lower confidence, generic readers)
 FALLBACK_PATTERNS: List[FilePatternRule] = [
     FilePatternRule(r'FY4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
     FilePatternRule(r'FY-4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
+    FilePatternRule(r'FY_4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
     FilePatternRule(r'FY4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
     FilePatternRule(r'FY-4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
+    FilePatternRule(r'FY_4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
     FilePatternRule(r'FY3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
     FilePatternRule(r'FY-3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    FilePatternRule(r'H08', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.70),
-    FilePatternRule(r'H09', SatelliteType.H09, ProductLevel.L1, 'ahi_hsd', 0.70),
-    FilePatternRule(r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'ahi_hsd', 0.60),
+    FilePatternRule(r'FY_3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
+    FilePatternRule(r'H08', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.70),
+    FilePatternRule(r'H09', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.70),
+    FilePatternRule(r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.60),
     # Fallback for NetCDF files
     FilePatternRule(r'\.nc$', SatelliteType.UNKNOWN, ProductLevel.L1, 'ahi_l1b_gridded', 0.50),
 ]
@@ -123,10 +116,10 @@ FALLBACK_PATTERNS: List[FilePatternRule] = [
 
 class FileTypeRecognizer:
     """
-    Intelligent file type recognizer that maps filenames directly to readers.
-    
-    This eliminates the trial-and-error reader fallback chain by using
-    precise filename pattern matching.
+    Intelligent file type recognizer that maps filenames directly to format identifiers.
+
+    Uses precise filename pattern matching to identify satellite data format,
+    allowing the driver factory to select the correct driver without guessing.
     """
     
     def __init__(self):
@@ -171,7 +164,11 @@ class FileTypeRecognizer:
                     reader=rule.reader,
                     confidence=rule.confidence,
                     timestamp=self._extract_timestamp(filename),
-                    resolution=self._extract_resolution(filename)
+                    resolution=self._extract_resolution(filename),
+                    sensor=self._extract_sensor(filename),
+                    product=self._extract_product(filename),
+                    region=self._extract_region(filename),
+                    file_format=self._extract_file_format(filename),
                 )
                 if use_cache:
                     self._cache[file_path] = result
@@ -187,7 +184,11 @@ class FileTypeRecognizer:
                     reader=rule.reader,
                     confidence=rule.confidence,
                     timestamp=self._extract_timestamp(filename),
-                    resolution=self._extract_resolution(filename)
+                    resolution=self._extract_resolution(filename),
+                    sensor=self._extract_sensor(filename),
+                    product=self._extract_product(filename),
+                    region=self._extract_region(filename),
+                    file_format=self._extract_file_format(filename),
                 )
                 if use_cache:
                     self._cache[file_path] = result
@@ -199,7 +200,13 @@ class FileTypeRecognizer:
             satellite_type=SatelliteType.UNKNOWN,
             product_level=ProductLevel.UNKNOWN,
             reader="auto",  # Fallback to auto-detection
-            confidence=0.0
+            confidence=0.0,
+            timestamp=self._extract_timestamp(filename),
+            resolution=self._extract_resolution(filename),
+            sensor=self._extract_sensor(filename),
+            product=self._extract_product(filename),
+            region=self._extract_region(filename),
+            file_format=self._extract_file_format(filename),
         )
         if use_cache:
             self._cache[file_path] = result
@@ -242,17 +249,24 @@ class FileTypeRecognizer:
         """
         results = self.recognize_batch(file_paths)
         
-        # Count reader occurrences (exclude auto)
-        reader_counts = {}
+        # Weighted score by confidence, with count as tie-breaker.
+        reader_scores: Dict[str, float] = {}
+        reader_counts: Dict[str, int] = {}
         for r in results:
-            if r.reader != "auto":
+            if r.reader != "auto" and r.confidence > 0.0:
+                reader_scores[r.reader] = reader_scores.get(r.reader, 0.0) + r.confidence
                 reader_counts[r.reader] = reader_counts.get(r.reader, 0) + 1
-        
-        if not reader_counts:
+
+        if not reader_scores:
             return None
-        
-        # Return most common
-        return max(reader_counts, key=reader_counts.get)
+
+        # Return highest weighted score, then highest count.
+        ranked = sorted(
+            reader_scores.keys(),
+            key=lambda k: (reader_scores[k], reader_counts.get(k, 0)),
+            reverse=True
+        )
+        return ranked[0]
     
     @staticmethod
     def _extract_timestamp(filename: str) -> Optional[str]:
@@ -281,6 +295,62 @@ class FileTypeRecognizer:
         match = re.search(r'(\d{3,4}M)', filename.upper())
         if match:
             return match.group(1)
+        return None
+
+    @staticmethod
+    def _extract_sensor(filename: str) -> Optional[str]:
+        """Extract sensor name from filename."""
+        name = filename.upper()
+        for sensor in ("AGRI", "MERSI", "AHI"):
+            if sensor in name:
+                return sensor
+        if "H08" in name or "H09" in name or "HIMAWARI" in name:
+            return "AHI"
+        return None
+
+    @staticmethod
+    def _extract_product(filename: str) -> Optional[str]:
+        """Extract product code from filename."""
+        name = filename.upper()
+        # Prioritize specific L2 product identifiers before generic region tokens.
+        high_priority = ("CLM", "FOG", "CWP", "CTT", "CTP", "ACHA", "ACSF", "SST", "LST")
+        for token in high_priority:
+            if re.search(rf'(^|[_-]){token}([_-]|$)', name):
+                return token
+        fallback_tokens = ("FDI", "CNR", "DISK")
+        for token in fallback_tokens:
+            if token in name:
+                return token
+        return None
+
+    @staticmethod
+    def _extract_region(filename: str) -> Optional[str]:
+        """Extract rough coverage region from filename markers."""
+        name = filename.upper()
+        if "GBAL" in name:
+            return "GLOBAL"
+        if "DISK" in name or "FDI" in name or "FDK" in name:
+            return "FULL_DISK"
+        if "CNR" in name:
+            return "CHINA"
+        return None
+
+    @staticmethod
+    def _extract_file_format(filename: str) -> Optional[str]:
+        """Extract file format by filename suffix."""
+        name = filename.upper()
+        if name.endswith(".DAT.BZ2"):
+            return "DAT.BZ2"
+        if name.endswith(".HDF5"):
+            return "HDF5"
+        if name.endswith(".HDF"):
+            return "HDF"
+        if name.endswith(".H5"):
+            return "H5"
+        if name.endswith(".NC"):
+            return "NC"
+        if name.endswith(".DAT"):
+            return "DAT"
         return None
     
     def clear_cache(self):

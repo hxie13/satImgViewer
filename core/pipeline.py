@@ -524,8 +524,6 @@ class ImageProcessingPipeline:
         def resampler_func(arr: da.Array, area: Any, method: str) -> da.Array:
             """Resample Dask array to target area."""
             try:
-                # Use Satpy's native resampling on Dask arrays
-                import satpy
                 from pyresample import geometry
 
                 # Create AreaDefinition from source if needed

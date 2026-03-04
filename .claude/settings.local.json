@@ -15,7 +15,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:fypy.readthedocs.io)",
       "WebFetch(domain:blog.csdn.net)",
-      "WebFetch(domain:www.researchgate.net)"
+      "WebFetch(domain:www.researchgate.net)",
+      "Bash(\"D:/softWare/miniconda3/envs/satImgLib/python.exe\" -c \":*)"
     ]
   }
 }

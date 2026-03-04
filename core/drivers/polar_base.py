@@ -117,13 +117,16 @@ class BasePolarDriver(BaseSatelliteDriver):
 
         west, east, south, north = target_extent
 
-        # 2. Build grid dimensions
+        # 2. Build grid dimensions — cap at MAX_SIDE to prevent OOM on global swaths
+        MAX_SIDE = 2048
         lon_range = east - west
         lat_range = north - south
         deg_per_m = 1.0 / 111_320.0          # approx degrees per metre at equator
         res_deg = res_m * deg_per_m
-        width  = max(1, int(round(lon_range / res_deg)))
-        height = max(1, int(round(lat_range / res_deg)))
+        width  = min(MAX_SIDE, max(1, int(round(lon_range / res_deg))))
+        height = min(MAX_SIDE, max(1, int(round(lat_range / res_deg))))
+        logger.info("[PolarBase] Resample grid: %dx%d (res=%.0fm, extent=%.1f°×%.1f°)",
+                    width, height, res_m, lon_range, lat_range)
 
         # 3. Create pyresample AreaDefinition
         proj_dict = {'proj': 'longlat', 'datum': 'WGS84'}
