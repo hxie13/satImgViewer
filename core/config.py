@@ -567,7 +567,7 @@ def get_band_display_name(canonical_name: str, satellite_id: Optional[str] = Non
 
 SATELLITE_BAND_MAPS: Dict[str, Dict[str, Dict]] = {
     # FY-4A / FY-4B  (AGRI sensor, L1 data)
-    # Satpy agri_fy4a / agri_fy4b returns dataset names as 'C01'~'C14' (FY-4A)
+    # Direct FY4Reader exposes channel IDs as 'C01'~'C14' (FY-4A baseline)
     # FY-4B additionally has 'C15' (14.3 μm CO2-slicing band)
     'AGRI_L1': {
         'VIS006': {'name': 'C01', 'wavelength': '0.47 μm', 'resolution': '1000M', 'type': 'visible'},
@@ -606,8 +606,8 @@ SATELLITE_BAND_MAPS: Dict[str, Dict[str, Dict]] = {
         'IR123':  {'name': 'B15', 'wavelength': '12.3 μm', 'resolution': '4000M', 'type': 'thermal'},
     },
 
-    # FY-3D  (MERSI-2 sensor, L1 data via Satpy mersi2_l1b reader)
-    # Satpy mersi2_l1b returns dataset names as pure integer strings '1'~'25'
+    # FY-3D  (MERSI-2 sensor, L1 data via direct FY3DReader)
+    # Dataset names are normalized to canonical IDs 'B01'~'B25'
     # Band grouping per official MERSI-2 spec:
     #   B01~B04: 250m reflective (RefSB)
     #   B05~B07: 1000m SWIR reflective

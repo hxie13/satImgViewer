@@ -183,7 +183,6 @@ class DriverFactory:
         file_paths: List[str],
         auto_detect: bool = True,
         preferred_format: Optional[str] = None,
-        preferred_reader: Optional[str] = None,
     ) -> BaseSatelliteDriver:
         """
         Create appropriate driver by analyzing files.
@@ -192,7 +191,6 @@ class DriverFactory:
             file_paths: List of file paths
             auto_detect: If True, automatically identify satellite type
             preferred_format: Optional direct format identifier from FileTypeRecognizer
-            preferred_reader: Deprecated alias of preferred_format (for compatibility)
 
         Returns:
             Configured driver instance
@@ -203,7 +201,7 @@ class DriverFactory:
         if not file_paths:
             raise ValueError("No file paths provided")
 
-        fmt = preferred_format or preferred_reader
+        fmt = preferred_format
 
         if fmt and fmt != "auto":
             # Use smart file recognizer result
@@ -251,7 +249,7 @@ class DriverFactory:
 
         Args:
             reader_name: Format identifier returned by FileTypeRecognizer
-                         (e.g., 'fy4_agri_l1', 'himawari_l1b_nc')
+                         (e.g., 'fy4_agri_l1', 'himawari_l1b_nc').
 
         Returns:
             Driver type key or None if not directly mapped
@@ -262,12 +260,6 @@ class DriverFactory:
             'fy4_l2_nc': 'fengyun',
             'fy3d_mersi_l1': 'fengyun3d',
             'himawari_l1b_nc': 'himawari',
-            # Backward compatibility with legacy values.
-            'agri_fy4b': 'fengyun',
-            'agri_fy4a': 'fengyun',
-            'mersi2_l1b': 'fengyun3d',
-            'mersi_l1b': 'fengyun3d',
-            'ahi_l1b_gridded': 'himawari',
         }
         return reader_map.get(reader_name)
 

@@ -140,16 +140,6 @@ class BaseSatelliteDriver(ABC):
             lg.handlers = []
             lg.addHandler(logging.NullHandler())
 
-    @staticmethod
-    def _configure_satpy_logging() -> None:
-        """
-        Backward-compatible alias kept for legacy code paths.
-
-        Satpy-specific handling has been removed; this now delegates to
-        generic dependency logging configuration.
-        """
-        BaseSatelliteDriver._configure_dependency_logging()
-
     def _init_driver(self) -> None:
         """Initialize driver-specific resources. Override in subclasses."""
         pass
@@ -247,7 +237,7 @@ class BaseSatelliteDriver(ABC):
 
     @property
     def scene(self):
-        """Get underlying Satpy Scene object if available."""
+        """Get underlying scene-like object if a concrete driver exposes one."""
         return self._scene
 
     @property

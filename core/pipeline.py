@@ -980,7 +980,7 @@ def create_pipeline_from_driver(driver: Any,
     Create pipeline from existing driver.
 
     Args:
-        driver: SatpyDriver or similar with scene
+        driver: Driver-like object exposing `scn` or `_scene` with band arrays
         bands: Band names to process
         target_area: Optional target AreaDefinition
         output_shape: Optional (width, height) for resize
