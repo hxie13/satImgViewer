@@ -154,3 +154,30 @@ satImgViewer/
 - Launch app and validate:
   - FY3D frame with/without China coverage under `plate_carree_china`.
   - 3D globe view seam visibility under multiple camera azimuth angles.
+
+## 2026-03-04 Engineering Memory Update (Projection Extent)
+
+### What changed
+- Replaced hardcoded geostationary extent heuristics in `core/geometry/projections.py`:
+  - Removed fixed FY4/Himawari ranges used in `_get_satellite_actual_extent()`.
+  - Added dynamic extent extraction from `source_area.get_lonlats()` valid pixels.
+- Added longitude circular-span analysis helpers:
+  - `_wrap_longitudes_180()`
+  - `_compute_circular_lon_bounds()`
+  - `_sample_area_lonlats()`
+  - `_extract_valid_lonlat_extent()`
+- Updated both projection entry points to use the same dynamic logic:
+  - `ProjectionFactory._get_satellite_actual_extent()`
+  - module-level `get_geographic_extent()`
+
+### Dateline handling strategy
+- Dateline crossing is detected from circular longitude gaps.
+- Current project pipeline expects a single non-wrapping longlat bbox.
+- For crossing scenes, code falls back to a conservative non-wrapping envelope to avoid pixel loss and avoid invalid target-area behavior in current render/resample paths.
+
+### Validation done
+- `conda run -n satImgLib ruff check core/geometry/projections.py`
+- `python -m py_compile core/geometry/projections.py`
+- `python -m compileall -q core ui utils main.py`
+- Runtime smoke in `satImgLib`:
+  - `ProjectionFactory._get_satellite_actual_extent(src_geos)` now returns dynamic bounds from lon/lat samples instead of fixed ranges.

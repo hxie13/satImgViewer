@@ -7,7 +7,7 @@ Supports geostationary, geographic, and custom projections.
 import os
 import threading
 import logging
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
 from dataclasses import dataclass
 import numpy as np
@@ -28,6 +28,168 @@ def _get_geometry():
         from pyresample import geometry as _geom
         _geometry = _geom
     return _geometry
+
+
+def _wrap_longitudes_180(lons: np.ndarray) -> np.ndarray:
+    """
+    Wrap longitude values to [-180, 180).
+
+    Args:
+        lons: Longitude array in degrees.
+
+    Returns:
+        Wrapped longitude array.
+    """
+    return ((lons + 180.0) % 360.0) - 180.0
+
+
+def _compute_circular_lon_bounds(
+    lons_deg: np.ndarray,
+) -> Optional[Tuple[float, float, bool, float]]:
+    """
+    Compute longitude bounds on a circle and detect dateline crossing.
+
+    This finds the minimum covering arc by removing the largest gap in sorted
+    longitudes.
+
+    Args:
+        lons_deg: Longitude samples in degrees (any range).
+
+    Returns:
+        Tuple of (west, east, crosses_dateline, span_deg), or None.
+    """
+    if lons_deg is None or lons_deg.size == 0:
+        return None
+
+    lons_wrapped = _wrap_longitudes_180(np.asarray(lons_deg, dtype=np.float64))
+    lons_sorted = np.sort(lons_wrapped)
+    count = int(lons_sorted.size)
+    if count == 0:
+        return None
+    if count == 1:
+        lon = float(lons_sorted[0])
+        return (lon, lon, False, 0.0)
+
+    gaps = np.diff(lons_sorted)
+    wrap_gap = float((lons_sorted[0] + 360.0) - lons_sorted[-1])
+    gaps = np.concatenate([gaps, np.array([wrap_gap], dtype=np.float64)])
+    max_gap_idx = int(np.argmax(gaps))
+    max_gap = float(gaps[max_gap_idx])
+
+    west = float(lons_sorted[(max_gap_idx + 1) % count])
+    east = float(lons_sorted[max_gap_idx % count])
+    span = max(0.0, 360.0 - max_gap)
+    crosses_dateline = east < west
+    return (west, east, crosses_dateline, span)
+
+
+def _sample_area_lonlats(area_def, max_points: int = 200_000) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Sample lon/lat arrays from AreaDefinition with bounded memory cost.
+
+    Args:
+        area_def: Pyresample geometry object.
+        max_points: Approximate maximum sampled points.
+
+    Returns:
+        Tuple (lons, lats), or None if unavailable.
+    """
+    if area_def is None or not hasattr(area_def, 'get_lonlats'):
+        return None
+
+    width = int(getattr(area_def, 'width', 0) or 0)
+    height = int(getattr(area_def, 'height', 0) or 0)
+    data_slice = None
+
+    if width > 0 and height > 0:
+        total_points = width * height
+        if total_points > max_points:
+            step = max(1, int(np.sqrt(total_points / float(max_points))))
+            data_slice = np.s_[::step, ::step]
+
+    try:
+        if data_slice is not None:
+            return area_def.get_lonlats(data_slice=data_slice, dtype=np.float32)
+        return area_def.get_lonlats(dtype=np.float32)
+    except TypeError:
+        # Older pyresample variants may not support dtype kwarg consistently.
+        if data_slice is not None:
+            return area_def.get_lonlats(data_slice=data_slice)
+        return area_def.get_lonlats()
+
+
+def _extract_valid_lonlat_extent(
+    area_def,
+    max_points: int = 200_000,
+) -> Optional[Tuple[float, float, float, float]]:
+    """
+    Extract geographic extent from valid lon/lat samples.
+
+    Handles dateline-crossing scenes by detecting circular longitude span.
+    Because the current longlat target grid in this project is a single
+    non-wrapping bbox, dateline-crossing cases fall back to a conservative
+    non-wrapping envelope to preserve all valid pixels.
+
+    Args:
+        area_def: Pyresample geometry object.
+        max_points: Approximate maximum sampled points.
+
+    Returns:
+        Tuple (west, east, south, north) in degrees, or None.
+    """
+    sampled = _sample_area_lonlats(area_def, max_points=max_points)
+    if sampled is None:
+        return None
+    lons, lats = sampled
+
+    valid = np.isfinite(lons) & np.isfinite(lats)
+    if not np.any(valid):
+        return None
+
+    lons_valid = _wrap_longitudes_180(np.asarray(lons[valid], dtype=np.float64))
+    lats_valid = np.asarray(lats[valid], dtype=np.float64)
+    if lons_valid.size == 0 or lats_valid.size == 0:
+        return None
+
+    lon_bounds = _compute_circular_lon_bounds(lons_valid)
+    if lon_bounds is None:
+        return None
+    west, east, crosses_dateline, lon_span = lon_bounds
+
+    south = float(np.nanmin(lats_valid))
+    north = float(np.nanmax(lats_valid))
+
+    if crosses_dateline:
+        # Current rendering/resampling chain expects non-wrapping longitude bbox.
+        # Use conservative envelope to avoid dropping coverage at the dateline.
+        west = float(np.nanmin(lons_valid))
+        east = float(np.nanmax(lons_valid))
+        if _DEBUG:
+            logger.debug(
+                "[GeoUtils] Dateline crossing detected (span=%.2f°); "
+                "using non-wrapping envelope W=%.2f E=%.2f",
+                lon_span, west, east
+            )
+
+    # Clamp to valid geographic ranges
+    west = max(-180.0, min(180.0, float(west)))
+    east = max(-180.0, min(180.0, float(east)))
+    south = max(-90.0, min(90.0, float(south)))
+    north = max(-90.0, min(90.0, float(north)))
+
+    if east < west:
+        # Safety fallback for any unexpected numeric edge cases.
+        west = float(np.nanmin(lons_valid))
+        east = float(np.nanmax(lons_valid))
+        west = max(-180.0, min(180.0, west))
+        east = max(-180.0, min(180.0, east))
+
+    if not all(np.isfinite([west, east, south, north])):
+        return None
+    if north < south:
+        south, north = north, south
+
+    return (west, east, south, north)
 
 
 class ProjectionType(Enum):
@@ -270,33 +432,22 @@ class ProjectionFactory:
             Tuple (west, east, south, north) in degrees, or None
         """
         try:
+            extent = _extract_valid_lonlat_extent(source_area, max_points=200_000)
+            if extent is not None:
+                return extent
+
+            # Fallback for already-geographic areas when lon/lat sampling is unavailable.
             proj_dict = getattr(source_area, 'proj_dict', {})
-
-            # Check if geostationary satellite
-            if proj_dict.get('proj') == 'geos':
-                lon_0 = float(proj_dict.get('lon_0', 105))
-                if os.environ.get('SATIMG_DEBUG'):
-                    logger.debug(f"[Projections] Geostationary satellite at {lon_0}°E")
-
-                # Use known coverage patterns for geostationary satellites
-                # FY-4B (105°E): ~75°E ~ 135°E, ~55°S ~ 55°N
-                if 99 <= lon_0 <= 107:  # FY-4 series
-                    return (75, 135, -55, 55)
-                elif 135 <= lon_0 <= 145:  # Himawari series
-                    return (80, 160, -60, 60)
-                else:
-                    # Generic geostationary: ~±65° from satellite position
-                    return (lon_0 - 65, lon_0 + 65, -60, 60)
-
-            # For other projections, try get_lonlats
-            if hasattr(source_area, 'get_lonlats'):
-                lons, lats = source_area.get_lonlats()
-                lons_valid = lons[np.isfinite(lons)]
-                lats_valid = lats[np.isfinite(lats)]
-
-                if len(lons_valid) > 0:
-                    return (float(np.min(lons_valid)), float(np.max(lons_valid)),
-                            float(np.min(lats_valid)), float(np.max(lats_valid)))
+            if proj_dict.get('proj') in ('longlat', 'latlong', 'eqc'):
+                ae = getattr(source_area, 'area_extent', None)
+                if ae and len(ae) == 4:
+                    west, south, east, north = map(float, ae)
+                    west = max(-180.0, min(180.0, west))
+                    east = max(-180.0, min(180.0, east))
+                    south = max(-90.0, min(90.0, south))
+                    north = max(-90.0, min(90.0, north))
+                    if east >= west and north >= south:
+                        return (west, east, south, north)
 
         except Exception as e:
             logger.debug(f"[Projections] Could not extract actual extent: {e}")
@@ -478,49 +629,32 @@ def get_geographic_extent(area_def) -> Optional[Tuple[float, float, float, float
     if _DEBUG:
         logger.debug(f"[GeoUtils] get_geographic_extent called with {type(area_def)}")
 
-    # PRIMARY: Try proj_dict inference for geostationary satellites
+    # Fast path: longlat/plate_carree AreaDefinition.
     try:
         if hasattr(area_def, 'proj_dict'):
             proj_dict = area_def.proj_dict
             if _DEBUG:
                 logger.debug(f"[GeoUtils] proj_dict: {proj_dict}")
 
-            if proj_dict.get('proj') == 'geos':
-                lon_0 = float(proj_dict.get('lon_0', 105.0))
-                if _DEBUG:
-                    logger.debug(f"[GeoUtils] Geostationary at {lon_0}°E")
-
-                if 99 <= lon_0 <= 107:  # FY4B, FY4A
-                    return (75, 135, -55, 55)
-                elif 135 <= lon_0 <= 145:  # Himawari
-                    return (80, 160, -60, 60)
-                else:
-                    west = lon_0 - 65
-                    east = lon_0 + 65
-                    return (west, east, -60, 60)
+            if proj_dict.get('proj') in ('longlat', 'latlong', 'eqc'):
+                ae = getattr(area_def, 'area_extent', None)
+                if ae and len(ae) == 4:
+                    west = max(-180.0, min(180.0, float(ae[0])))
+                    south = max(-90.0, min(90.0, float(ae[1])))
+                    east = max(-180.0, min(180.0, float(ae[2])))
+                    north = max(-90.0, min(90.0, float(ae[3])))
+                    if east >= west and north >= south:
+                        return (west, east, south, north)
     except Exception as e:
         if _DEBUG:
             logger.debug(f"[GeoUtils] proj_dict inference failed: {e}")
 
-    # FALLBACK: Try get_lonlats()
+    # Primary dynamic path for geostationary/native projections:
+    # derive bounds from valid lon/lat pixels sampled from source area.
     try:
-        if hasattr(area_def, 'get_lonlats'):
-            lons, lats = area_def.get_lonlats()
-
-            # Filter valid coordinates
-            lons_valid = lons[np.isfinite(lons)]
-            lats_valid = lats[np.isfinite(lats)]
-
-            if len(lons_valid) > 0 and len(lats_valid) > 0:
-                west = float(np.nanmin(lons_valid))
-                east = float(np.nanmax(lons_valid))
-                south = float(np.nanmin(lats_valid))
-                north = float(np.nanmax(lats_valid))
-
-                # Validate
-                if (-180 <= west <= 180 and -180 <= east <= 180 and
-                    -90 <= south <= 90 and -90 <= north <= 90):
-                    return (west, east, south, north)
+        extent = _extract_valid_lonlat_extent(area_def, max_points=200_000)
+        if extent is not None:
+            return extent
     except Exception as e:
         if _DEBUG:
             logger.debug(f"[GeoUtils] get_lonlats failed: {e}")

@@ -327,3 +327,25 @@ satImgViewer 是面向遥感/气象业务的桌面端卫星影像处理与可视
 ### Validation
 - `python -m compileall -q core ui utils main.py`
 - `python -m compileall -q ui/globe_canvas.py ui/main_window.py core/drivers/fengyun3d.py`
+
+## 2026-03-04 Engineering Update (Dynamic Plate-Carree Extent)
+
+### Objective
+- Ensure plate-carree projection extent uses actual satellite coverage pixels instead of fixed geostationary preset boxes.
+
+### Implemented changes
+- In `core/geometry/projections.py`:
+  - Added sampled lon/lat extent extraction from `source_area.get_lonlats()`.
+  - Replaced fixed geostationary range branches in:
+    - `ProjectionFactory._get_satellite_actual_extent()`
+    - `get_geographic_extent()`
+  - Added helper methods for longitude wrap normalization and circular span detection.
+
+### Dateline behavior
+- Dateline crossing is explicitly detected from longitude distribution.
+- Because the current pipeline uses a single non-wrapping target bbox for longlat areas, crossing scenes currently fallback to a conservative non-wrapping envelope to preserve valid coverage.
+
+### Quality checks
+- `conda run -n satImgLib ruff check core/geometry/projections.py` passed.
+- `python -m py_compile core/geometry/projections.py` passed.
+- `python -m compileall -q core ui utils main.py` passed.
