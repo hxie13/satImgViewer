@@ -119,8 +119,9 @@ class ExportController(QObject):
         self._vid_worker = worker
         worker.progress.connect(self.video_progress)
         worker.finished.connect(self._on_video_finished)
-        worker.error.connect(self.video_error)
+        worker.error.connect(self._on_video_error)
         worker.finished.connect(lambda _: self._cleanup_video_worker())
+        worker.error.connect(lambda _: self._cleanup_video_worker())
         worker.start()
         self.status.emit("Video export started...")
         return True
@@ -152,6 +153,10 @@ class ExportController(QObject):
     def _on_video_finished(self, path: str) -> None:
         self.video_finished.emit(path)
         self.status.emit("Video export complete.")
+
+    def _on_video_error(self, message: str) -> None:
+        self.video_error.emit(message)
+        self.status.emit("Video export failed.")
 
     def _cleanup_video_worker(self) -> None:
         if self._vid_worker is not None and not self._vid_worker.isRunning():

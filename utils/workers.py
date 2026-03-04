@@ -118,12 +118,14 @@ class VideoExportWorker(QThread):
                 raise ValueError("No frames to export")
 
             writer = None
+            written_frames = 0
             proj_name = self.params.get('proj_name', 'plate_carree_global')
             gamma = self.params.get('gamma', 1.0)
             quality_profile = self.params.get('quality_profile', 'export_high')
             resample_method = self.params.get('resample_method', 'bilinear')
             driver_type = self.params.get('driver_type')
             output_size = self._balanced_output_size(self.params.get('output_size'))
+            target_w, target_h = int(output_size[0]), int(output_size[1])
 
             # Initialize (or reuse) a driver session once before frame loop.
             init_t0 = time.perf_counter()
@@ -187,16 +189,23 @@ class VideoExportWorker(QThread):
                 else:
                     frame = cv2.cvtColor(img_u8, cv2.COLOR_GRAY2BGR)
 
-                height, width, _ = frame.shape
+                # VideoWriter requires fixed frame size for all frames.
+                # Some sources (e.g. FY3D swath fallback paths) may output
+                # variable-sized frames per timestamp, so normalize here.
+                height, width = frame.shape[:2]
+                if width != target_w or height != target_h:
+                    interpolation = cv2.INTER_AREA if (width > target_w or height > target_h) else cv2.INTER_LINEAR
+                    frame = cv2.resize(frame, (target_w, target_h), interpolation=interpolation)
 
                 # Initialize writer on first frame
                 if writer is None:
                     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (width, height))
+                    writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (target_w, target_h))
                     if not writer.isOpened():
                         raise RuntimeError("Could not open video writer")
 
                 writer.write(frame)
+                written_frames += 1
                 encode_ms = (time.perf_counter() - encode_t0) * 1000.0
                 self._encode_times_ms.append(encode_ms)
                 self.progress.emit(i + 1, total)
@@ -213,6 +222,8 @@ class VideoExportWorker(QThread):
                 writer.release()
 
             if not self._is_cancelled:
+                if written_frames == 0:
+                    raise RuntimeError("Video export produced zero frames")
                 self._log_perf_summary()
                 self.finished.emit(self.output_path)
                 logger.info(f"Video export complete: {self.output_path}")

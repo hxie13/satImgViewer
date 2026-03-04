@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         self._export_controller.export_error.connect(self.on_worker_error)
         self._export_controller.video_progress.connect(self.on_video_progress)
         self._export_controller.video_finished.connect(self._on_video_ctrl_finished)
-        self._export_controller.video_error.connect(self.on_worker_error)
+        self._export_controller.video_error.connect(self._on_video_ctrl_error)
         self._export_controller.status.connect(lambda m: self._on_controller_status("export", m))
 
         # Legacy state aliases kept for methods not yet migrated to controllers
@@ -409,7 +409,10 @@ class MainWindow(QMainWindow):
             else:
                 zone.set_state(BandDropZone.STATE_NORMAL)
 
-        self.video_button.setEnabled(bool(self.file_groups) and rgb_complete and not self.cancel_video_button.isEnabled())
+        # Keep Video button clickable once data exists; detailed RGB checks are
+        # handled in export_video_sequence() with explicit user feedback.
+        has_groups = bool(self.file_groups) or bool(self._state.file_groups)
+        self.video_button.setEnabled(has_groups and not self.cancel_video_button.isEnabled())
         self.previous_button.setEnabled(bool(self.file_groups))
         self.next_button.setEnabled(bool(self.file_groups))
         can_jump = bool(self.file_groups)
@@ -433,13 +436,14 @@ class MainWindow(QMainWindow):
             return
         self.load_frame(target)
 
-    def reset_visualization(self):
+    def reset_visualization(self, update_status: bool = True):
         """Clear current visualization content and cached render state."""
         self.cached_img = None
         self.cached_extent = None
         self.current_bands = []
         self._last_render_request_signature = None
         self._state.clear_image_cache()
+        self._state.selected_bands = []
         self._state.img_3d = None
         self._state.extent_3d = None
         self._state.proj_3d = None
@@ -456,17 +460,100 @@ class MainWindow(QMainWindow):
         self.view_status_label.setText("View: cleared")
         self.render_info_label.setText("Render: --")
         self.preview_info_label.setText("Preview: cleared")
-        self._set_ui_status("success", "Visualization cleared")
+        if update_status:
+            self._set_ui_status("success", "Visualization cleared")
+
+    def _available_band_names(self) -> set:
+        """Get currently listed band names from the GUI band list."""
+        names = set()
+        for i in range(self.band_list_widget.count()):
+            item = self.band_list_widget.item(i)
+            if item:
+                txt = item.text().strip()
+                if txt:
+                    names.add(txt)
+        return names
+
+    def _sanitize_band_selection(self, valid_band_names: set) -> None:
+        """
+        Remove stale band selections that don't belong to the active dataset.
+        """
+        changed = False
+        for zone in [self.red_drop_zone, self.green_drop_zone, self.blue_drop_zone]:
+            txt = zone.text().strip()
+            if txt and txt not in valid_band_names:
+                zone.clear_band()
+                changed = True
+
+        selected = self.band_list_widget.currentItem()
+        if selected and selected.text().strip() not in valid_band_names:
+            self.band_list_widget.clearSelection()
+            changed = True
+
+        if changed:
+            self.current_bands = []
+            self._state.selected_bands = []
+            self._last_render_request_signature = None
+
+    def _reset_for_dataset_switch(self) -> None:
+        """
+        Reset GUI and backend state to startup-like baseline before loading a new folder.
+        """
+        self._slider_debounce_timer.stop()
+        self._pending_slider_index = None
+
+        self._export_controller.shutdown()
+        self._timeseries_controller.shutdown(wait_ms=1000)
+        self._image_controller.cancel()
+        self._image_controller.clear_cache()
+
+        self._manager.unload()
+
+        self.file_groups = []
+        self.current_frame_index = -1
+        self.current_bands = []
+        self._band_dataset_signature = None
+        self._last_render_request_signature = None
+        self._state.file_groups = []
+        self._state.current_frame_index = -1
+        self._state.selected_bands = []
+        self._state.clear_image_cache()
+
+        self.band_list_widget.clear()
+        self.band_list_widget.clearSelection()
+        self.red_drop_zone.clear_band()
+        self.green_drop_zone.clear_band()
+        self.blue_drop_zone.clear_band()
+
+        self.time_slider.blockSignals(True)
+        self.time_slider.setEnabled(False)
+        self.time_slider.setRange(0, 0)
+        self.time_slider.setValue(0)
+        self.time_slider.blockSignals(False)
+        self.time_label.setText("Time: N/A")
+
+        self.frame_index_spinbox.blockSignals(True)
+        self.frame_index_spinbox.setRange(1, 1)
+        self.frame_index_spinbox.setValue(1)
+        self.frame_index_spinbox.setEnabled(False)
+        self.frame_index_spinbox.blockSignals(False)
+        self.jump_frame_button.setEnabled(False)
+        self.frame_info_label.setText("Frame: --/--")
+
+        self.video_button.setEnabled(False)
+        self.cancel_video_button.setEnabled(False)
+        self.export_info_label.setText("Export: idle")
+        self.header_meta_label.setText("No dataset loaded")
+
+        self.reset_visualization(update_status=False)
+        self._sync_action_states()
 
     def load_data(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Data Folder")
         if not folder:
             return
 
-        self._band_dataset_signature = None
-        self._last_render_request_signature = None
-        self._state.clear_image_cache()
-        self._image_controller.clear_cache()
+        self._reset_for_dataset_switch()
 
         self._set_ui_status("loading", "Scanning folder...")
 
@@ -528,6 +615,11 @@ class MainWindow(QMainWindow):
         try:
             bands = self._manager.get_available_bands()
             if not bands:
+                self._band_dataset_signature = None
+                self.band_list_widget.clear()
+                self.band_list_widget.clearSelection()
+                self._sanitize_band_selection(set())
+                self._sync_action_states()
                 return
 
             band_names = []
@@ -545,6 +637,7 @@ class MainWindow(QMainWindow):
 
             self.band_list_widget.clear()
             self.band_list_widget.addItems(sorted(band_names))
+            self._sanitize_band_selection(set(band_names))
             self._sync_action_states()
         except Exception as e:
             logger.warning(f"Error updating band list: {e}")
@@ -612,7 +705,10 @@ class MainWindow(QMainWindow):
 
     # Video export button callback
     def export_video_sequence(self):
-        if not self.file_groups:
+        groups = self._state.file_groups if self._state.file_groups else self.file_groups
+        if not groups:
+            self._set_ui_status("error", "Video export blocked: no time-series data loaded")
+            QMessageBox.information(self, "Info", "No time-series data loaded yet. Please load a folder first.")
             return
 
         # Check RGB band selection
@@ -641,6 +737,11 @@ class MainWindow(QMainWindow):
             self.video_button.setEnabled(False)
             self.cancel_video_button.setEnabled(True)
             self._set_ui_status("loading", "Exporting video... This may take a while.")
+            self._sync_action_states()
+        else:
+            self.video_button.setEnabled(True)
+            self.cancel_video_button.setEnabled(False)
+            self._set_ui_status("error", "Video export failed to start")
             self._sync_action_states()
     
     def on_video_progress(self, current, total):
@@ -705,13 +806,20 @@ class MainWindow(QMainWindow):
 
     def _collect_selected_bands(self):
         """Get selected bands from RGB dropzones or single-band list selection."""
+        valid_band_names = self._available_band_names()
         r = self.red_drop_zone.text()
         g = self.green_drop_zone.text()
         b = self.blue_drop_zone.text()
-        if r and g and b:
+        if (
+            r and g and b and
+            r in valid_band_names and
+            g in valid_band_names and
+            b in valid_band_names
+        ):
             return [r, g, b]
-        if self.band_list_widget.currentItem():
-            return [self.band_list_widget.currentItem().text()]
+        selected = self.band_list_widget.currentItem()
+        if selected and selected.text() in valid_band_names:
+            return [selected.text()]
         return []
 
     def _get_preview_output_size(self, max_side: int = 1600):
@@ -959,6 +1067,15 @@ class MainWindow(QMainWindow):
         self._sync_action_states()
         QMessageBox.information(self, "Success", f"Video saved to:\n{path}")
 
+    def _on_video_ctrl_error(self, message: str):
+        """Slot: ExportController video export failed."""
+        self.video_button.setEnabled(True)
+        self.cancel_video_button.setEnabled(False)
+        self._set_ui_status("error", f"Video export error: {message}")
+        self.export_info_label.setText("Export: video failed")
+        self._sync_action_states()
+        QMessageBox.critical(self, "Video Export Error", f"Failed to export video:\n{message}")
+
     def _cancel_video_export(self):
         """Request cancellation of the running video export."""
         self._export_controller.cancel_video_export()
@@ -971,6 +1088,7 @@ class MainWindow(QMainWindow):
         """Stop background workers before window destruction."""
         try:
             self._image_controller.shutdown()
+            self._timeseries_controller.shutdown()
             self._export_controller.shutdown()
         except Exception as exc:
             logger.exception(f"Controller shutdown failed: {exc}")

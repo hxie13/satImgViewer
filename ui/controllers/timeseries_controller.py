@@ -57,11 +57,26 @@ class TimeSeriesController(QObject):
 
     def set_file_groups(self, file_groups: List[List[str]]) -> None:
         """Store all time-series file groups in state."""
-        self._state.file_groups = file_groups
+        self._cancel_current_worker()
+        self._state.file_groups = list(file_groups) if file_groups else []
         self._state.current_frame_index = -1
         self._pinned_driver_type = None
         self._bad_frame_indices.clear()
         self._loading_index = -1
+
+    def cancel_loading(self) -> None:
+        """Cancel an in-progress frame load and clear transient loading state."""
+        self._cancel_current_worker()
+        self._loading_index = -1
+
+    def shutdown(self, wait_ms: int = 300) -> None:
+        """Stop worker and reset controller transient state."""
+        if self._frame_worker and self._frame_worker.isRunning():
+            self._frame_worker.cancel()
+            self._frame_worker.wait(wait_ms)
+        self._frame_worker = None
+        self._loading_index = -1
+        self._pinned_driver_type = None
 
     def load_frame(self, index: int, driver_type: Optional[str] = None) -> bool:
         """
