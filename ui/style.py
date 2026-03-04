@@ -517,8 +517,9 @@ def _render_theme_template(template: str, tokens: dict) -> str:
 DARK_THEME_QSS = _render_theme_template(_THEME_TEMPLATE, THEME_TOKENS_DARK)
 
 
-def get_theme_qss(theme: str) -> str:
-    # Current product default: tech dark theme.
-    if (theme or "").lower() in {"dark", "default", "light"}:
-        return DARK_THEME_QSS
+def get_theme_qss(theme: str = "dark") -> str:
+    """Return application QSS theme string.
+
+    Currently only the dark theme is implemented.
+    """
     return DARK_THEME_QSS

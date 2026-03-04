@@ -680,21 +680,3 @@ PROJECTION_GRID_EXTENTS: dict = {
     'plate_carree_china':  ( 70.0,  142.0,  15.0,  55.0),
 }
 
-
-# =============================================================================
-# Preset Band Combinations
-# =============================================================================
-
-PRESET_COMBINATIONS: Dict[str, List[str]] = {
-    'true_color': ['VIS006', 'RED', 'NIR016'],
-    'natural_color': ['NIR016', 'SWIR16', 'RED'],
-    'fire': ['SWIR16', 'SWIR22', 'IR039'],
-    'fog_detection': ['IR039', 'IR105', 'IR112'],
-    'water_vapor': ['WV062', 'WV070', 'WV073'],
-    'cloud_top': ['IR105', 'IR112', 'IR123'],
-}
-
-
-def get_preset_combination(name: str) -> Optional[List[str]]:
-    """Get preset band combination by name."""
-    return PRESET_COMBINATIONS.get(name)

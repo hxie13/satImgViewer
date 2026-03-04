@@ -125,3 +125,32 @@ satImgViewer/
 └── utils/
     └── workers.py          # ImageLoaderWorker, VideoExportWorker
 ```
+
+## 2026-03-04 Engineering Memory Update
+
+### What changed
+- Added FY3D-China projection risk warning in `ui/main_window.py`:
+  - Triggered on projection selection.
+  - Re-checked before `run_process()` when needed.
+- Extended FY3D metadata in `core/drivers/fengyun3d.py`:
+  - Added `swath_extent`.
+  - Added `swath_overlaps_china`.
+- Reworked 3D globe seam handling in `ui/globe_canvas.py`:
+  - Replaced default sphere creation with seam-safe UV sphere topology.
+  - Added texture horizontal wrap enforcement for seam columns.
+  - Disabled graticule by default to avoid visual confusion with seam lines.
+
+### Important implementation details
+- `QComboBox` signal is `currentIndexChanged` (not `currentDataChanged`) in this runtime.
+- Projection risk warning key uses current frame/time metadata to avoid repeated popups.
+- Seam fix is geometric-first (mesh topology), not only texture post-processing.
+
+### Validation done
+- Compile checks passed:
+  - `python -m compileall -q core ui utils main.py`
+  - `python -m compileall -q ui/globe_canvas.py ui/main_window.py core/drivers/fengyun3d.py`
+
+### Next recommended verification in satImgLib
+- Launch app and validate:
+  - FY3D frame with/without China coverage under `plate_carree_china`.
+  - 3D globe view seam visibility under multiple camera azimuth angles.

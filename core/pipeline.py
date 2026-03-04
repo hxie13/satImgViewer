@@ -297,53 +297,49 @@ class NormalizeNode(BasePipelineNode):
         self.high_percent = high_percent
 
     def _normalize_dask(self, arr: da.Array, low: float, high: float) -> da.Array:
-        """Apply percentile normalization to Dask array.
+        """Apply percentile normalization keeping the Dask graph lazy.
 
-        NOTE [P1-3]: The .compute() call below materialises the entire Dask
-        graph at this node, breaking lazy evaluation.  A proper fix is to use
-        dask.array.percentile() (available in recent Dask versions) so the
-        percentile computation stays in the graph and is fused with downstream
-        operations.  Tracked as: TODO — replace arr.compute() with
-        da.percentile(arr, [low, high]) once minimum Dask version is confirmed.
+        Uses da.percentile() to compute only two scalars (p_low, p_high)
+        without materializing the full array, preventing OOM on large images.
         """
         try:
-            # Compute percentiles using numpy (triggers computation for this chunk)
-            arr_np = arr.compute()
+            # Replace NaN with 0 for percentile calculation (lazy)
+            arr_clean = da.where(da.isnan(arr), 0, arr)
 
-            # Debug: print statistics
-            arr_min = np.nanmin(arr_np)
-            arr_max = np.nanmax(arr_np)
-            nan_count = np.sum(np.isnan(arr_np))
-            logger.debug(f"[Normalize] arr stats: min={arr_min:.4f}, max={arr_max:.4f}, NaN count={nan_count}")
+            # Compute only the two percentile scalars — NOT the full array
+            p_low, p_high = da.percentile(arr_clean.ravel(), [low, high]).compute()
 
-            # Check if data is all NaN
-            if nan_count == arr_np.size:
-                logger.warning(f"[Normalize] All pixels are NaN! Returning zeros")
-                return da.zeros_like(arr, dtype=arr.dtype)
+            if logger.isEnabledFor(logging.DEBUG):
+                arr_np = arr.compute()
+                logger.debug(
+                    f"[Normalize] arr stats: min={np.nanmin(arr_np):.4f}, "
+                    f"max={np.nanmax(arr_np):.4f}, NaN count={np.sum(np.isnan(arr_np))}"
+                )
 
-            # Replace NaN with 0 for percentile calculation
-            arr_clean = np.where(np.isnan(arr_np), 0, arr_np)
+            # Check if data is all NaN (p_low and p_high will both be 0)
+            if p_low == 0 and p_high == 0:
+                # Verify by checking a small sample
+                sample = arr.ravel()[:1000].compute()
+                if np.all(np.isnan(sample)):
+                    logger.warning("[Normalize] All pixels appear to be NaN! Returning zeros")
+                    return da.zeros_like(arr, dtype=arr.dtype)
 
-            p_low, p_high = np.percentile(arr_clean, [low, high])
             logger.debug(f"Percentiles: p{low}={p_low:.4f}, p{high}={p_high:.4f}")
 
             # Handle edge case where p_low == p_high
             if p_high <= p_low:
                 logger.warning(f"Normalization: p_high ({p_high}) <= p_low ({p_low}), skipping stretch")
-                return da.from_array(np.clip(arr_clean, 0, 1))
+                return da.clip(arr_clean, 0, 1)
 
-            # Apply stretch
-            arr_normalized = (arr_clean - p_low) / (p_high - p_low)
-            arr_normalized = np.clip(arr_normalized, 0, 1)
+            # Apply stretch (all lazy Dask operations)
+            arr_normalized = da.clip((arr_clean - p_low) / (p_high - p_low), 0, 1)
 
             # Preserve NaN where original was NaN
-            arr_normalized = np.where(np.isnan(arr_np), np.nan, arr_normalized)
+            arr_normalized = da.where(da.isnan(arr), np.nan, arr_normalized)
 
-            return da.from_array(arr_normalized, chunks=arr.chunks)
+            return arr_normalized
         except Exception as e:
-            logger.warning(f"Normalization failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"Normalization failed: {e}")
             return arr
 
     def process(self, data: Dict[str, Any], config: PipelineConfig) -> Dict[str, Any]:

@@ -92,6 +92,8 @@ class FengYun3DDriver(BasePolarDriver):
         self._current_level = ProductLevel.L1
         self._dataset_names: List[str] = []
         self._primary_file_path: Optional[str] = None
+        self._swath_extent: Optional[Tuple[float, float, float, float]] = None
+        self._swath_overlaps_china: Optional[bool] = None
 
     def _init_driver(self) -> None:
         """Initialize driver-specific resources."""
@@ -181,9 +183,12 @@ class FengYun3DDriver(BasePolarDriver):
                 self._swath_lons = lons
                 self._swath_lats = lats
                 self._is_swath = True
+                self._update_swath_coverage_cache()
                 logger.info(f"[FY3D] GEO loaded: lons.shape={lons.shape}")
             else:
                 self._is_swath = True   # FY-3D is always swath
+                self._swath_extent = None
+                self._swath_overlaps_china = None
                 logger.warning("[FY3D] GEO file not found — lon/lat unavailable")
 
             self._is_loaded = True
@@ -270,6 +275,50 @@ class FengYun3DDriver(BasePolarDriver):
             except Exception:
                 pass
             self._reader = None
+
+    def _update_swath_coverage_cache(self) -> None:
+        """
+        Cache swath extent and a fast China-overlap estimate from lon/lat arrays.
+
+        This keeps UI-side risk checks lightweight when switching to
+        plate_carree_china projection.
+        """
+        self._swath_extent = None
+        self._swath_overlaps_china = None
+
+        if self._swath_lons is None or self._swath_lats is None:
+            return
+
+        try:
+            self._swath_extent = self._extent_from_swath(
+                self._swath_lons,
+                self._swath_lats,
+                padding_deg=0.0,
+            )
+        except Exception as exc:
+            logger.debug("[FY3D] Failed to derive swath extent: %s", exc)
+            self._swath_extent = None
+
+        try:
+            # Down-sample to cap cost at roughly 200k sample points.
+            total_points = int(self._swath_lons.size)
+            step = max(1, int(np.sqrt(max(1, total_points // 200_000))))
+            lons_sample = self._swath_lons[::step, ::step]
+            lats_sample = self._swath_lats[::step, ::step]
+            valid = np.isfinite(lons_sample) & np.isfinite(lats_sample)
+            if not np.any(valid):
+                self._swath_overlaps_china = None
+                return
+
+            in_china = (
+                valid &
+                (lons_sample >= 70.0) & (lons_sample <= 142.0) &
+                (lats_sample >= 15.0) & (lats_sample <= 55.0)
+            )
+            self._swath_overlaps_china = bool(np.any(in_china))
+        except Exception as exc:
+            logger.debug("[FY3D] Failed to estimate China overlap: %s", exc)
+            self._swath_overlaps_china = None
 
     def _build_dataset_map(self) -> None:
         """Build mapping from canonical names (B01) to reader band IDs."""
@@ -410,6 +459,8 @@ class FengYun3DDriver(BasePolarDriver):
         self._primary_file_path = None
         self._swath_lons = None
         self._swath_lats = None
+        self._swath_extent = None
+        self._swath_overlaps_china = None
         self._is_swath = False
         self._is_loaded = False
         logger.info("[FY3D] Driver resources released")
@@ -454,6 +505,7 @@ class FengYun3DDriver(BasePolarDriver):
                 if lons is not None:
                     self._swath_lons = lons
                     self._swath_lats = lats
+                    self._update_swath_coverage_cache()
 
             if self._swath_lons is None:
                 raise ValueError("[FY3D] Geolocation (lon/lat) not available — GEO file required")
@@ -699,6 +751,9 @@ class FengYun3DDriver(BasePolarDriver):
                 'geo_file': reader_meta.get('geo_file', 'N/A'),
                 'data_format': 'L1_HDF5',
             })
+
+        meta['swath_extent'] = self._swath_extent
+        meta['swath_overlaps_china'] = self._swath_overlaps_china
 
         return meta
 

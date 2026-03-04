@@ -1,27 +1,74 @@
 import sys
 import os
 import logging
+import warnings
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Fix PROJ_LIB pollution from system-level PostgreSQL/PostGIS.
+# PostGIS installs its own PROJ data directory and sets PROJ_LIB globally,
+# which causes pyproj/PROJ version mismatch ("no database context specified").
+# PROJ_LIB must be set BEFORE any pyproj/cartopy import — importing pyproj
+# itself triggers PROJ C library initialization with whatever PROJ_LIB is
+# set at that moment.
+# ---------------------------------------------------------------------------
+def _configure_proj_runtime() -> None:
+    """
+    Bind pyproj/PROJ to the active conda environment data directory.
+
+    In this project environment, pyproj's bundled proj_dir may fail to provide
+    a valid DB context, while `%CONDA_PREFIX%/Library/share/proj` works.
+    """
+    logger = logging.getLogger(__name__)
+
+    def _valid_proj_dir(path: Path) -> bool:
+        return path.is_dir() and (path / "proj.db").is_file()
+
+    conda_prefix = Path(os.environ.get("CONDA_PREFIX") or sys.prefix)
+    candidate_dirs = [
+        conda_prefix / "Library" / "share" / "proj",  # Windows conda
+        conda_prefix / "share" / "proj",              # Linux/macOS conda
+    ]
+    proj_dir = next((p for p in candidate_dirs if _valid_proj_dir(p)), None)
+
+    if proj_dir is None:
+        logger.warning("No valid PROJ data directory found; skipping PROJ runtime fix")
+        return
+
+    # Clear potentially polluted global path (e.g. PostgreSQL/PostGIS).
+    os.environ.pop("PROJ_LIB", None)
+    os.environ["PROJ_DATA"] = str(proj_dir)
+
+    # pyproj import may emit one bootstrap warning before data dir is rebound.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="pyproj unable to set PROJ database path.*",
+            category=UserWarning,
+        )
+        from pyproj import datadir
+
+    datadir.set_data_dir(str(proj_dir))
+
+    try:
+        import pyproj.database as _db
+        if len(_db.get_authorities()) == 0:
+            logger.warning("PROJ database context still unavailable after initialization")
+    except Exception as exc:
+        logger.warning(f"PROJ database probe failed: {exc}")
+
+    # Noisy informational warning triggered by CRS->PROJ4 conversion in dependencies.
+    warnings.filterwarnings(
+        "ignore",
+        message="You will likely lose important projection information when converting to a PROJ string.*",
+        category=UserWarning,
+        module=r"pyproj\.crs\.crs",
+    )
+
+_configure_proj_runtime()
 
 # Ensure project root is in path.
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# Windows: add all conda env DLL directories so h5py can find hdf5.dll and its
-# transitive deps.  Git Bash conda-activate only adds Scripts/, not Library/bin.
-# The bundled h5py/hdf5.dll is renamed .bak so Windows searches here instead.
-if sys.platform == "win32":
-    for _d in (
-        sys.prefix,
-        os.path.join(sys.prefix, "Library", "bin"),
-        os.path.join(sys.prefix, "Library", "mingw-w64", "bin"),
-        os.path.join(sys.prefix, "Library", "usr", "bin"),
-    ):
-        if os.path.isdir(_d):
-            os.add_dll_directory(_d)
-
-from PyQt6.QtWidgets import QApplication
-from ui.main_window import MainWindow
-from ui.style import get_theme_qss
-
 
 def _configure_logging() -> None:
     """Default WARNING logging; enable DEBUG when SATIMG_DEBUG=1."""
@@ -35,6 +82,10 @@ def _configure_logging() -> None:
 
 def main():
     _configure_logging()
+    from PyQt6.QtWidgets import QApplication
+    from ui.main_window import MainWindow
+    from ui.style import get_theme_qss
+
     app = QApplication(sys.argv)
     app.setApplicationName("Himawari Pro Viewer")
     app.setStyleSheet(get_theme_qss("dark"))
@@ -47,4 +98,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

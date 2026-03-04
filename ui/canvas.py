@@ -12,8 +12,8 @@ from core.config import PROJECTION_GRID_SHAPES, PROJECTION_GRID_EXTENTS
 
 logger = logging.getLogger(__name__)
 
-# Suppress Cartopy transformation warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+# Suppress Cartopy transformation warnings (narrowed to cartopy module)
+warnings.filterwarnings("ignore", category=UserWarning, module="cartopy")
 
 class StableFigureCanvas(FigureCanvasQTAgg):
     """Reduce accidental wheel-zoom jitter on hover."""
@@ -87,23 +87,6 @@ class GeoCanvas(QWidget):
 
         self.canvas.draw()
 
-    def plot_pixel_mode(self, img_data):
-        self.fig.clear()
-        self.ax = self.fig.add_subplot(111)
-
-        # Hide axis ticks
-        self.ax.axis('off')
-
-        # Set image background color (prevents white showing during zoom)
-        self.ax.set_facecolor('#0E1828')
-
-        if img_data.ndim == 3:
-            self.ax.imshow(img_data)
-        else:
-            self.ax.imshow(img_data, cmap='gray')
-
-        self.ax.set_title("Preview (No Geo-Location)", color='#8BA5C5')
-
     def update_image(self, img_data, area_def):
         """
         Core rendering function (with projection adaptive logic).
@@ -137,43 +120,35 @@ class GeoCanvas(QWidget):
                 logger.exception(f"[Canvas] Draw failed in pixel mode fallback: {e}")
             return
 
-        # Check if image data is valid
+        # Handle invalid regions — set near-black/NaN pixels to NaN for transparency in imshow
         try:
-            # Check data in more detail
-            img_min = np.nanmin(img_data)
-            img_max = np.nanmax(img_data)
-
-            # Check NaN and black pixels
-            nan_pixels = np.sum(np.isnan(img_data))
-            black_pixels = np.sum((img_data < 0.01).all(axis=-1)) if img_data.ndim == 3 else np.sum(img_data < 0.01)
-            valid_data_pixels = np.sum((np.abs(img_data) > 0.01).any(axis=-1)) if img_data.ndim == 3 else np.sum(np.abs(img_data) > 0.01)
             total_pixels = img_data.shape[0] * img_data.shape[1]
 
-            logger.debug(f"[Canvas] img_data stats: min={img_min:.6f}, max={img_max:.6f}")
-            logger.debug(f"[Canvas] NaN pixels: {nan_pixels}, Black/near-black pixels: {black_pixels}")
-            logger.debug(f"[Canvas] Valid data pixels: {valid_data_pixels}/{total_pixels} ({100*valid_data_pixels/total_pixels:.1f}%)")
+            # Build validity mask (functional — always runs)
+            if img_data.ndim == 3:
+                valid_mask = (img_data > 0.01).any(axis=-1)
+            else:
+                valid_mask = img_data > 0.01
+            valid_data_pixels = int(np.sum(valid_mask))
 
-            # Handle invalid regions (NaN or all black) - set to NaN for proper transparency in imshow
-            if nan_pixels < total_pixels or black_pixels > 0:
-                # Create mask to identify invalid regions
-                if img_data.ndim == 3:
-                    # RGB image: check all channels
-                    valid_mask = (img_data > 0.01).any(axis=-1)
-                else:
-                    # Grayscale image
-                    valid_mask = img_data > 0.01
+            # Debug-only: expensive full-array stats
+            if logger.isEnabledFor(logging.DEBUG):
+                img_min = np.nanmin(img_data)
+                img_max = np.nanmax(img_data)
+                nan_pixels = np.sum(np.isnan(img_data))
+                logger.debug(f"[Canvas] img_data stats: min={img_min:.6f}, max={img_max:.6f}")
+                logger.debug(f"[Canvas] NaN pixels: {nan_pixels}, valid: {valid_data_pixels}/{total_pixels}")
 
-                # If many invalid pixels, set to NaN
-                invalid_ratio = 1 - (valid_data_pixels / total_pixels)
-                if invalid_ratio > 0.1:  # More than 10% invalid
-                    logger.debug(f"[Canvas] Setting {invalid_ratio*100:.1f}% invalid pixels to NaN for transparency")
-                    img_data = img_data.copy()
-                    img_data[~valid_mask] = np.nan
+            # If many invalid pixels, set to NaN for proper transparency
+            invalid_ratio = 1 - (valid_data_pixels / total_pixels)
+            if invalid_ratio > 0.1:  # More than 10% invalid
+                logger.debug(f"[Canvas] Setting {invalid_ratio*100:.1f}% invalid pixels to NaN for transparency")
+                img_data = img_data.copy()
+                img_data[~valid_mask] = np.nan
 
         except Exception as e:
             logger.exception(f"[Canvas] Error checking image data: {e}")
 
-        self.ax.clear()
         self.fig.clear()
 
         if img_data.ndim < 2:

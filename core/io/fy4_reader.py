@@ -371,10 +371,23 @@ class FY4L2Reader:
     L2 variables (CLM, CTT, CTP, etc.) are already in physical units.
     """
 
+    _ENGINES = ['netcdf4', 'h5netcdf', 'scipy']
+
     def __init__(self, file_path: str):
         import xarray as xr
         self._path = file_path
-        self._ds = xr.open_dataset(file_path, engine='netcdf4', mask_and_scale=True)
+        self._ds = None
+        for engine in self._ENGINES:
+            try:
+                self._ds = xr.open_dataset(file_path, engine=engine, mask_and_scale=True)
+                break
+            except (ImportError, ModuleNotFoundError, ValueError, RuntimeError):
+                continue
+        if self._ds is None:
+            raise ImportError(
+                f"Cannot open {file_path}: none of {self._ENGINES} engines available. "
+                "Install netCDF4 or h5netcdf: pip install netCDF4"
+            )
         self._satellite = _detect_satellite_from_path(file_path)
 
     def available_variables(self) -> List[str]:

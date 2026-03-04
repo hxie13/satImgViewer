@@ -1,6 +1,7 @@
 import sys
 import os
 import logging
+from typing import Optional, Tuple
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QLabel, QSplitter,
                              QGroupBox, QSlider, QTabWidget, QMessageBox, QComboBox,
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         self._band_dataset_signature = None
         self._last_render_request_signature = None
         self._pending_slider_index = None
+        self._fy3d_china_projection_warn_key = None
         self._slider_debounce_timer = QTimer(self)
         self._slider_debounce_timer.setSingleShot(True)
         self._slider_debounce_timer.timeout.connect(self._apply_debounced_slider_load)
@@ -208,6 +210,7 @@ class MainWindow(QMainWindow):
         proj_options = get_available_projections()
         for proj_id, proj_name, proj_desc in proj_options:
             self.projection_combobox.addItem(f"{proj_name} ({proj_desc})", proj_id)
+        self.projection_combobox.currentIndexChanged.connect(self._on_projection_changed)
         gb_proj_layout.addWidget(self.projection_combobox)
         layout.addWidget(gb_proj)
 
@@ -369,6 +372,102 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence("Space"), self, activated=lambda: self._set_ui_status("idle", "Playback toggle reserved")),
         ]
 
+    def _on_projection_changed(self, _index: int) -> None:
+        """React to projection selection changes."""
+        proj_id = self.projection_combobox.currentData()
+        if isinstance(proj_id, str):
+            self._state.current_projection = proj_id
+        self._maybe_warn_fy3d_china_projection_risk(proj_id=proj_id)
+
+    @staticmethod
+    def _bbox_intersects(
+        bbox_a: Tuple[float, float, float, float],
+        bbox_b: Tuple[float, float, float, float],
+    ) -> bool:
+        """Check overlap for bboxes in (west, east, south, north)."""
+        west_a, east_a, south_a, north_a = bbox_a
+        west_b, east_b, south_b, north_b = bbox_b
+        lon_overlap = max(west_a, west_b) <= min(east_a, east_b)
+        lat_overlap = max(south_a, south_b) <= min(north_a, north_b)
+        return bool(lon_overlap and lat_overlap)
+
+    def _get_fy3d_swath_overlap_with_china(self) -> Optional[bool]:
+        """
+        Estimate whether current FY3D swath intersects China region.
+        Returns True / False when known, or None when unavailable.
+        """
+        if self._manager.current_driver_type != "fengyun3d":
+            return None
+
+        try:
+            metadata = self._manager.get_metadata()
+        except Exception as exc:
+            logger.debug("FY3D metadata unavailable for overlap check: %s", exc)
+            return None
+
+        overlap = metadata.get("swath_overlaps_china")
+        if isinstance(overlap, bool):
+            return overlap
+
+        swath_extent = metadata.get("swath_extent")
+        if (
+            isinstance(swath_extent, (tuple, list))
+            and len(swath_extent) == 4
+            and all(isinstance(v, (int, float)) for v in swath_extent)
+        ):
+            swath_bbox = (
+                float(swath_extent[0]),
+                float(swath_extent[1]),
+                float(swath_extent[2]),
+                float(swath_extent[3]),
+            )
+            china_bbox = (70.0, 142.0, 15.0, 55.0)
+            return self._bbox_intersects(swath_bbox, china_bbox)
+
+        return None
+
+    def _maybe_warn_fy3d_china_projection_risk(self, proj_id: Optional[str] = None) -> None:
+        """Warn early for FY3D + China projection when China coverage is missing/unknown."""
+        target_proj = proj_id if isinstance(proj_id, str) else self.projection_combobox.currentData()
+        if target_proj != "plate_carree_china":
+            return
+        if self._manager.current_driver_type != "fengyun3d":
+            return
+
+        overlap = self._get_fy3d_swath_overlap_with_china()
+        if overlap is True:
+            return
+
+        try:
+            metadata = self._manager.get_metadata()
+        except Exception:
+            metadata = {}
+
+        frame_key = (
+            self.current_frame_index,
+            metadata.get("start_time"),
+            overlap,
+        )
+        if frame_key == self._fy3d_china_projection_warn_key:
+            return
+        self._fy3d_china_projection_warn_key = frame_key
+
+        if overlap is False:
+            message = (
+                "Current FY3D swath likely does not cover China (70E-142E, 15N-55N).\n\n"
+                "Using Plate Carree China may produce mostly NaN pixels and trigger "
+                "\"All-NaN slice encountered\" warnings."
+            )
+        else:
+            message = (
+                "FY3D is polar-swath data. The current frame may not cover China "
+                "(70E-142E, 15N-55N).\n\n"
+                "Using Plate Carree China may produce many NaN pixels and trigger "
+                "\"All-NaN slice encountered\" warnings."
+            )
+
+        QMessageBox.information(self, "FY3D Projection Risk", message)
+
     def _set_ui_status(self, level: str, message: str) -> None:
         level = level if level in {"idle", "loading", "success", "error"} else "idle"
         self.statusBar().showMessage(message)
@@ -442,6 +541,7 @@ class MainWindow(QMainWindow):
         self.cached_extent = None
         self.current_bands = []
         self._last_render_request_signature = None
+        self._fy3d_china_projection_warn_key = None
         self._state.clear_image_cache()
         self._state.selected_bands = []
         self._state.img_3d = None
@@ -514,6 +614,7 @@ class MainWindow(QMainWindow):
         self.current_bands = []
         self._band_dataset_signature = None
         self._last_render_request_signature = None
+        self._fy3d_china_projection_warn_key = None
         self._state.file_groups = []
         self._state.current_frame_index = -1
         self._state.selected_bands = []
@@ -778,6 +879,8 @@ class MainWindow(QMainWindow):
             return
 
         proj_id = self.projection_combobox.currentData()
+        if not silent:
+            self._maybe_warn_fy3d_china_projection_risk(proj_id=proj_id)
         self.current_bands = bands.copy()
         self._state.selected_bands = bands.copy()
         self._state.gamma = self.current_gamma

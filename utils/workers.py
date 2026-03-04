@@ -5,6 +5,7 @@ QThread workers for async image processing and video export.
 Uses SatelliteImageManager API.
 """
 from PyQt6.QtCore import QThread, pyqtSignal
+import threading
 import time
 import cv2
 import numpy as np
@@ -35,14 +36,14 @@ class FrameLoaderWorker(QThread):
         self.manager = manager
         self.files = files
         self.pinned_driver_type = pinned_driver_type
-        self._is_cancelled = False
+        self._cancel_event = threading.Event()
 
     def cancel(self):
         """Request cooperative cancellation (checked before emitting signals)."""
-        self._is_cancelled = True
+        self._cancel_event.set()
 
     def run(self):
-        if self._is_cancelled:
+        if self._cancel_event.is_set():
             return
         try:
             ok = False
@@ -50,13 +51,13 @@ class FrameLoaderWorker(QThread):
             if self.manager.current_driver is not None:
                 ok = self.manager.reload_current(self.files)
 
-            if not ok and not self._is_cancelled:
+            if not ok and not self._cancel_event.is_set():
                 kwargs = {"reuse_session": True}
                 if self.pinned_driver_type:
                     kwargs["pinned_driver_type"] = self.pinned_driver_type
                 ok = self.manager.load_files(self.files, **kwargs)
 
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return
 
             if not ok:
@@ -68,7 +69,7 @@ class FrameLoaderWorker(QThread):
             self.frame_loaded.emit(time_str)
 
         except Exception as e:
-            if not self._is_cancelled:
+            if not self._cancel_event.is_set():
                 self.error.emit(str(e))
 
 
@@ -101,14 +102,14 @@ class VideoExportWorker(QThread):
         self.bands = bands
         self.params = params
         self.fps = fps
-        self._is_cancelled = False
+        self._cancel_event = threading.Event()
         self._load_times_ms = []
         self._process_times_ms = []
         self._encode_times_ms = []
 
     def cancel(self):
         """Cancel export."""
-        self._is_cancelled = True
+        self._cancel_event.set()
 
     def run(self):
         """Execute video export."""
@@ -139,7 +140,7 @@ class VideoExportWorker(QThread):
                 raise RuntimeError("Failed to initialize export session")
 
             for i, files in enumerate(self.file_groups):
-                if self._is_cancelled:
+                if self._cancel_event.is_set():
                     break
 
                 # Per-frame load: first frame already loaded, following frames only reload current driver.
@@ -221,7 +222,7 @@ class VideoExportWorker(QThread):
             if writer:
                 writer.release()
 
-            if not self._is_cancelled:
+            if not self._cancel_event.is_set():
                 if written_frames == 0:
                     raise RuntimeError("Video export produced zero frames")
                 self._log_perf_summary()
@@ -286,16 +287,16 @@ class ImageLoaderWorker(QThread):
         self.manager = manager
         self.bands = bands
         self.params = params or {}
-        self._is_cancelled = False
+        self._cancel_event = threading.Event()
 
     def cancel(self):
         """Request cooperative cancellation."""
-        self._is_cancelled = True
+        self._cancel_event.set()
 
     def run(self):
         """Execute image generation."""
         try:
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return
             logger.info(f"[Worker] Starting image generation for bands={self.bands}")
             t0 = time.time()
@@ -315,94 +316,11 @@ class ImageLoaderWorker(QThread):
             logger.info(f"[Worker] Image generated in {t1 - t0:.2f}s")
             logger.info(f"[Worker] Emitting data_ready with shape={getattr(img, 'shape', 'unknown')}")
 
-            if self._is_cancelled:
+            if self._cancel_event.is_set():
                 return
             self.data_ready.emit(img, area)
 
         except Exception as e:
             logger.error(f"[Worker] Failed: {e}")
-            if not self._is_cancelled:
+            if not self._cancel_event.is_set():
                 self.error.emit(str(e))
-
-
-class BatchExportWorker(QThread):
-    """
-    Worker for batch image export to files.
-    """
-    progress = pyqtSignal(int, int)  # (current, total)
-    finished = pyqtSignal(str, list)  # (output_dir, exported_files)
-    error = pyqtSignal(str)
-
-    def __init__(self, manager, file_groups, output_dir, bands, params, format='png'):
-        """
-        Initialize worker.
-
-        Args:
-            manager: SatelliteImageManager instance
-            file_groups: List of file groups
-            output_dir: Output directory
-            bands: Band names
-            params: Processing parameters
-            format: Output format (png, geotiff)
-        """
-        super().__init__()
-        self.manager = manager
-        self.file_groups = file_groups
-        self.output_dir = output_dir
-        self.bands = bands
-        self.params = params
-        self.format = format
-        self._is_cancelled = False
-
-    def cancel(self):
-        """Cancel batch export."""
-        self._is_cancelled = True
-
-    def run(self):
-        """Execute batch export."""
-        try:
-            import os
-
-            total = len(self.file_groups)
-            if total == 0:
-                raise ValueError("No frames to export")
-
-            os.makedirs(self.output_dir, exist_ok=True)
-            exported_files = []
-
-            for i, files in enumerate(self.file_groups):
-                if self._is_cancelled:
-                    break
-
-                # Load frame
-                if not self.manager.load_files(files):
-                    logger.warning(f"Failed to load frame {i}")
-                    continue
-
-                # Generate output filename
-                base_name = f"frame_{i:04d}.{self.format}"
-                output_path = os.path.join(self.output_dir, base_name)
-
-                # Export
-                result = self.manager.export_image(
-                    output_path=output_path,
-                    bands=self.bands,
-                    gamma=self.params.get('gamma', 1.0),
-                    proj_name=self.params.get('proj_name', 'geostationary_native'),
-                    format=self.format
-                )
-
-                if result.get('success'):
-                    exported_files.append(output_path)
-
-                self.progress.emit(i + 1, total)
-
-                # Memory cleanup
-                if (i + 1) % 5 == 0:
-                    gc.collect()
-
-            self.finished.emit(self.output_dir, exported_files)
-
-        except Exception as e:
-            logger.error(f"Batch export failed: {e}")
-            self.error.emit(str(e))

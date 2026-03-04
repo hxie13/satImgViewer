@@ -309,3 +309,21 @@ satImgViewer 是面向遥感/气象业务的桌面端卫星影像处理与可视
 | FY-4A C13（IR105）全圆盘显示回归 | **待执行** |
 | GUI 视觉冒烟（启动后界面色调、R/G/B 行、× 按钮） | **待执行** |
 | 地图底图与 UI 背景色一致性目视验证 | **待执行** |
+
+## 2026-03-04 Engineering Update (Runtime Fixes + Style Consolidation)
+
+### Implemented fixes
+- Added FY3D-China projection risk warning flow in `ui/main_window.py`.
+- Added FY3D coverage metadata (`swath_extent`, `swath_overlaps_china`) in `core/drivers/fengyun3d.py`.
+- Fixed 3D globe seam artifacts in `ui/globe_canvas.py` with seam-safe UV sphere topology.
+- Disabled default graticule rendering in 3D base map to avoid visual confusion with seam-like lines.
+
+### Style and naming consolidation
+- Corrected PyQt signal usage to `currentIndexChanged`.
+- Unified new handler signatures and removed unused parameters.
+- Added/normalized type hints in newly added methods.
+- Split compact semicolon statements into explicit one-line assignments.
+
+### Validation
+- `python -m compileall -q core ui utils main.py`
+- `python -m compileall -q ui/globe_canvas.py ui/main_window.py core/drivers/fengyun3d.py`

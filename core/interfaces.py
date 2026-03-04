@@ -3,10 +3,20 @@ Deprecated legacy interfaces.
 
 This module is retained only for very old integrations that still import
 ``core.interfaces``. New code should use ``core.drivers.base.BaseSatelliteDriver``.
+
+Deprecated since: 2026-03-03 (satpy-free migration).
+Planned removal: next major version.
 """
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
+
+warnings.warn(
+    "core.interfaces is deprecated. Use core.drivers.base.BaseSatelliteDriver instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class ISatelliteDataProvider(ABC):

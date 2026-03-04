@@ -15,6 +15,31 @@ logger = logging.getLogger(__name__)
 class BaseCompositor(ABC):
     """Abstract base class for RGB compositing strategies."""
 
+    def _validate_and_extract_rgb(
+        self,
+        bands_data: Dict[str, np.ndarray],
+        band_order: List[str],
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate RGB band order and extract channel data arrays.
+
+        Args:
+            bands_data: Dictionary mapping band names to data arrays.
+            band_order: List of band names in order [R, G, B].
+
+        Returns:
+            Tuple of (r_data, g_data, b_data).
+
+        Raises:
+            ValueError: If band_order length != 3 or bands are missing.
+        """
+        if len(band_order) != 3:
+            raise ValueError("RGB composition requires exactly 3 bands")
+        channels = [bands_data.get(b) for b in band_order]
+        missing = [b for b, d in zip(band_order, channels) if d is None]
+        if missing:
+            raise ValueError(f"Missing bands: {missing}")
+        return tuple(channels)
+
     @abstractmethod
     def composite(self, bands_data: Dict[str, np.ndarray],
                   band_order: List[str]) -> np.ndarray:
@@ -51,22 +76,10 @@ class LinearCompositor(BaseCompositor):
     def composite(self, bands_data: Dict[str, np.ndarray],
                   band_order: List[str]) -> np.ndarray:
         """Compose RGB image using linear normalization."""
-        if len(band_order) != 3:
-            raise ValueError("RGB composition requires exactly 3 bands")
-
-        r_data = bands_data.get(band_order[0])
-        g_data = bands_data.get(band_order[1])
-        b_data = bands_data.get(band_order[2])
-
-        if any(d is None for d in [r_data, g_data, b_data]):
-            missing = [b for b, d in zip(band_order, [r_data, g_data, b_data]) if d is None]
-            raise ValueError(f"Missing bands: {missing}")
-
-        # Normalize each band
+        r_data, g_data, b_data = self._validate_and_extract_rgb(bands_data, band_order)
         r = self.normalize(r_data)
         g = self.normalize(g_data)
         b = self.normalize(b_data)
-
         return np.stack([r, g, b], axis=-1)
 
     def normalize(self, data: np.ndarray) -> np.ndarray:
@@ -88,17 +101,7 @@ class PercentileCompositor(BaseCompositor):
     def composite(self, bands_data: Dict[str, np.ndarray],
                   band_order: List[str]) -> np.ndarray:
         """Compose RGB image using percentile normalization."""
-        if len(band_order) != 3:
-            raise ValueError("RGB composition requires exactly 3 bands")
-
-        r_data = bands_data.get(band_order[0])
-        g_data = bands_data.get(band_order[1])
-        b_data = bands_data.get(band_order[2])
-
-        if any(d is None for d in [r_data, g_data, b_data]):
-            missing = [b for b, d in zip(band_order, [r_data, g_data, b_data]) if d is None]
-            raise ValueError(f"Missing bands: {missing}")
-
+        r_data, g_data, b_data = self._validate_and_extract_rgb(bands_data, band_order)
         r = self.normalize(r_data)
         g = self.normalize(g_data)
         b = self.normalize(b_data)
@@ -133,21 +136,10 @@ class HistogramEqualizationCompositor(BaseCompositor):
     def composite(self, bands_data: Dict[str, np.ndarray],
                   band_order: List[str]) -> np.ndarray:
         """Compose RGB image with histogram equalization."""
-        if len(band_order) != 3:
-            raise ValueError("RGB composition requires exactly 3 bands")
-
-        r_data = bands_data.get(band_order[0])
-        g_data = bands_data.get(band_order[1])
-        b_data = bands_data.get(band_order[2])
-
-        if any(d is None for d in [r_data, g_data, b_data]):
-            missing = [b for b, d in zip(band_order, [r_data, g_data, b_data]) if d is None]
-            raise ValueError(f"Missing bands: {missing}")
-
+        r_data, g_data, b_data = self._validate_and_extract_rgb(bands_data, band_order)
         r = self._equalize(r_data)
         g = self._equalize(g_data)
         b = self._equalize(b_data)
-
         return np.stack([r, g, b], axis=-1)
 
     def _equalize(self, data: np.ndarray) -> np.ndarray:
