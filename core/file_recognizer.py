@@ -372,6 +372,16 @@ def recognize_files(file_paths: List[str]) -> List[FileRecognitionResult]:
     return _recognizer.recognize_batch(file_paths)
 
 
-def get_recommended_reader(file_paths: List[str]) -> Optional[str]:
+def get_recommended_format(file_paths: List[str]) -> Optional[str]:
     """Get the recommended format identifier for a list of files."""
     return _recognizer.get_consensus_reader(file_paths)
+
+
+def get_recommended_reader(file_paths: List[str]) -> Optional[str]:
+    """
+    Backward-compatible alias of get_recommended_format.
+
+    Kept to avoid breaking existing call sites while the codebase migrates
+    from legacy "reader" terminology to neutral "format" terminology.
+    """
+    return get_recommended_format(file_paths)

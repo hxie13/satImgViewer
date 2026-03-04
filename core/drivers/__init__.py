@@ -14,7 +14,7 @@ from .polar_base import BasePolarDriver
 from .fengyun import FengYunDriver
 from .fengyun3d import FengYun3DDriver
 from .himawari import HimawariDriver
-from ..file_recognizer import get_recommended_reader
+from ..file_recognizer import get_recommended_format
 
 logger = logging.getLogger(__name__)
 
@@ -178,16 +178,21 @@ class DriverFactory:
         return driver_class(**kwargs)
 
     @classmethod
-    def create_from_files(cls, file_paths: List[str],
-                          auto_detect: bool = True,
-                          preferred_reader: Optional[str] = None) -> BaseSatelliteDriver:
+    def create_from_files(
+        cls,
+        file_paths: List[str],
+        auto_detect: bool = True,
+        preferred_format: Optional[str] = None,
+        preferred_reader: Optional[str] = None,
+    ) -> BaseSatelliteDriver:
         """
         Create appropriate driver by analyzing files.
 
         Args:
             file_paths: List of file paths
             auto_detect: If True, automatically identify satellite type
-            preferred_reader: Optional direct format identifier from FileTypeRecognizer
+            preferred_format: Optional direct format identifier from FileTypeRecognizer
+            preferred_reader: Deprecated alias of preferred_format (for compatibility)
 
         Returns:
             Configured driver instance
@@ -198,14 +203,16 @@ class DriverFactory:
         if not file_paths:
             raise ValueError("No file paths provided")
 
-        if preferred_reader and preferred_reader != "auto":
+        fmt = preferred_format or preferred_reader
+
+        if fmt and fmt != "auto":
             # Use smart file recognizer result
-            logger.info(f"Using FileTypeRecognizer recommendation: {preferred_reader}")
+            logger.info(f"Using FileTypeRecognizer recommendation: {fmt}")
             
             # Determine driver type from reader name
-            driver_type = cls._reader_to_driver_type(preferred_reader)
+            driver_type = cls._reader_to_driver_type(fmt)
             if driver_type is None:
-                driver_type = cls._infer_driver_type_from_generic_reader(file_paths, preferred_reader)
+                driver_type = cls._infer_driver_type_from_generic_reader(file_paths, fmt)
             if driver_type:
                 return cls.create_driver(driver_type)
         
@@ -306,11 +313,11 @@ class DriverFactory:
             raise ValueError("No file paths provided")
         
         # Use smart recognizer
-        recommended_reader = get_recommended_reader(file_paths)
+        recommended_format = get_recommended_format(file_paths)
         
-        if recommended_reader:
-            logger.info(f"[SmartRecognition] Direct reader match: {recommended_reader}")
-            return cls.create_from_files(file_paths, preferred_reader=recommended_reader)
+        if recommended_format:
+            logger.info(f"[SmartRecognition] Direct format match: {recommended_format}")
+            return cls.create_from_files(file_paths, preferred_format=recommended_format)
         else:
             logger.warning("[SmartRecognition] No direct match, falling back to auto-detection")
             return cls.create_from_files(file_paths, auto_detect=True)

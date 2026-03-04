@@ -91,7 +91,8 @@ def build_lonlat_area(
     """
     from pyresample import geometry
 
-    proj_dict = {'proj': 'longlat', 'datum': 'WGS84', 'units': 'deg'}
+    # PROJ no longer accepts '+units=deg' for longlat in recent versions.
+    proj_dict = {'proj': 'longlat', 'datum': 'WGS84'}
     area = geometry.AreaDefinition(
         area_id,
         'WGS84 Plate Carree',

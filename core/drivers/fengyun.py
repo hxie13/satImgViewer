@@ -23,8 +23,6 @@ from .base import (
     BandInfo,
     ProcessingParams,
 )
-from ..file_recognizer import get_recommended_reader
-
 logger = logging.getLogger(__name__)
 
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Satellite Image Manager (Facade)
 
 Central facade coordinating drivers, pipelines, and projections.
@@ -19,7 +19,7 @@ from .drivers.base import SatelliteFileInfo, ProcessingParams
 from .geometry import ProjectionFactory, ProjectionType
 from .pipelines import RGBCompositorFactory, EnhancementPipeline
 from .config import get_satellite_config, get_band_display_name
-from .file_recognizer import get_recommended_reader
+from .file_recognizer import get_recommended_format
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class SatelliteImageManager:
                 all_files.extend(glob.glob(os.path.join(directory, pattern)))
             return sorted(all_files)
 
-        # Default: single-pass scandir is ~7× faster than 7 separate glob calls
+        # Default: single-pass scandir is ~7脳 faster than 7 separate glob calls
         EXTS = {'.nc', '.NC', '.dat', '.DAT', '.bz2', '.h5', '.H5', '.hdf', '.HDF'}
         all_files = []
         try:
@@ -177,18 +177,18 @@ class SatelliteImageManager:
                 current_type = self._infer_current_driver_type()
                 target_type = requested_type or current_type
                 # Compute format hint once to improve driver selection stability.
-                recommended_reader = get_recommended_reader(file_paths)
-                if recommended_reader:
-                    self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_reader}")
+                recommended_format = get_recommended_format(file_paths)
+                if recommended_format:
+                    self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_format}")
 
                 # Resolve the driver type implied by the recommended format so that
-                # switching satellite type (e.g. FY-4 �?FY-3D) always creates a fresh driver.
+                # switching satellite type (e.g. FY-4 鈫?FY-3D) always creates a fresh driver.
                 recommended_driver = None
-                if recommended_reader and recommended_reader != 'auto':
-                    recommended_driver = DriverFactory._reader_to_driver_type(recommended_reader)
+                if recommended_format and recommended_format != 'auto':
+                    recommended_driver = DriverFactory._reader_to_driver_type(recommended_format)
                     if recommended_driver is None:
                         recommended_driver = DriverFactory._infer_driver_type_from_generic_reader(
-                            file_paths, recommended_reader
+                            file_paths, recommended_format
                         )
 
                 should_reuse = (
@@ -207,7 +207,7 @@ class SatelliteImageManager:
                         self._driver = DriverFactory.create_from_files(
                             file_paths, 
                             auto_detect=auto_detect,
-                            preferred_reader=recommended_reader
+                            preferred_format=recommended_format
                         )
                         self._driver_type = self._infer_current_driver_type()
                 elif self._driver_type is None:
@@ -720,4 +720,5 @@ class SatelliteImageManager:
         """Context manager exit."""
         self.unload()
         return False
+
 

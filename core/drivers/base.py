@@ -128,31 +128,27 @@ class BaseSatelliteDriver(ABC):
         )
 
     @staticmethod
-    def _configure_satpy_logging() -> None:
+    def _configure_dependency_logging() -> None:
         """
-        Configure logging to suppress SatPy reader loading warnings.
-
-        Must be called BEFORE importing satpy to suppress YAML parsing errors
-        from missing optional dependencies (e.g., HDF5 libraries for seadas_l2).
+        Configure noisy third-party loggers to keep app output clean.
         """
-        # Define loggers that should be suppressed
-        suppress_loggers = [
-            'satpy.readers.core.loading',
-            'satpy.readers.core.yaml_reader',
-            'satpy.readers.core',
-            'satpy.readers',
-            'satpy.scene',
-            'satpy',
-            'pyresample',
-        ]
-
+        suppress_loggers = ['pyresample']
         for name in suppress_loggers:
             lg = logging.getLogger(name)
-            lg.setLevel(logging.ERROR)  # Only show errors, not warnings
+            lg.setLevel(logging.ERROR)
             lg.propagate = False
-            # Remove existing handlers and add NullHandler
             lg.handlers = []
             lg.addHandler(logging.NullHandler())
+
+    @staticmethod
+    def _configure_satpy_logging() -> None:
+        """
+        Backward-compatible alias kept for legacy code paths.
+
+        Satpy-specific handling has been removed; this now delegates to
+        generic dependency logging configuration.
+        """
+        BaseSatelliteDriver._configure_dependency_logging()
 
     def _init_driver(self) -> None:
         """Initialize driver-specific resources. Override in subclasses."""
