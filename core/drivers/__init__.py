@@ -14,7 +14,7 @@ from .polar_base import BasePolarDriver
 from .fengyun import FengYunDriver
 from .fengyun3d import FengYun3DDriver
 from .himawari import HimawariDriver
-from ..file_recognizer import FileTypeRecognizer, get_recommended_reader
+from ..file_recognizer import get_recommended_reader
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class DriverFactory:
         Args:
             file_paths: List of file paths
             auto_detect: If True, automatically identify satellite type
-            preferred_reader: Optional direct reader recommendation from FileTypeRecognizer
+            preferred_reader: Optional direct format identifier from FileTypeRecognizer
 
         Returns:
             Configured driver instance
@@ -244,17 +244,23 @@ class DriverFactory:
 
         Args:
             reader_name: Format identifier returned by FileTypeRecognizer
-                         (e.g., 'agri_fy4b', 'ahi_l1b_gridded')
+                         (e.g., 'fy4_agri_l1', 'himawari_l1b_nc')
 
         Returns:
             Driver type key or None if not directly mapped
         """
         reader_map = {
+            # Native direct-I/O identifiers.
+            'fy4_agri_l1': 'fengyun',
+            'fy4_l2_nc': 'fengyun',
+            'fy3d_mersi_l1': 'fengyun3d',
+            'himawari_l1b_nc': 'himawari',
+            # Backward compatibility with legacy values.
             'agri_fy4b': 'fengyun',
             'agri_fy4a': 'fengyun',
-            'ahi_l1b_gridded': 'himawari',
             'mersi2_l1b': 'fengyun3d',
             'mersi_l1b': 'fengyun3d',
+            'ahi_l1b_gridded': 'himawari',
         }
         return reader_map.get(reader_name)
 

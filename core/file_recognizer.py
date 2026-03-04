@@ -37,7 +37,7 @@ class FileRecognitionResult:
     file_path: str
     satellite_type: SatelliteType
     product_level: ProductLevel
-    reader: str  # Direct reader recommendation
+    reader: str  # Direct format recommendation (driver-facing)
     confidence: float  # 0.0 - 1.0
     timestamp: Optional[str] = None
     resolution: Optional[str] = None  # e.g., "4000M", "1000M"
@@ -69,26 +69,26 @@ class FilePatternRule:
 
 FILE_PATTERNS: List[FilePatternRule] = [
     # FY-4B AGRI L1 (historical naming variants)
-    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.97),
-    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.95),
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'fy4_agri_l1', 0.97),
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4B, ProductLevel.L1, 'fy4_agri_l1', 0.95),
     # FY-4B AGRI L2 products (mostly CF-like)
-    FilePatternRule(r'FY[-_]?4B.*AGRI.*L2.*(CLM|FOG|CWP|CTT|CTP|ACHA|ACSF|SST|LST).*\.(HDF5?|NC)$', SatelliteType.FY4B, ProductLevel.L2, 'generic_nc', 0.93),
+    FilePatternRule(r'FY[-_]?4B.*AGRI.*L2.*(CLM|FOG|CWP|CTT|CTP|ACHA|ACSF|SST|LST).*\.(HDF5?|NC)$', SatelliteType.FY4B, ProductLevel.L2, 'fy4_l2_nc', 0.93),
 
     # FY-4A AGRI L1
-    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.97),
-    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.95),
+    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*(FDI|DISK|FDK|CNR).*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'fy4_agri_l1', 0.97),
+    FilePatternRule(r'FY[-_]?4A.*AGRI.*L1.*\d{14}.*\.((HDF5?)|(NC))$', SatelliteType.FY4A, ProductLevel.L1, 'fy4_agri_l1', 0.95),
 
     # FY-3D MERSI L1
-    FilePatternRule(r'FY[-_]?3D.*MERSI.*L1.*\d{8}[_-]?\d{4}.*\.(HDF5?|H5)$', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.96),
+    FilePatternRule(r'FY[-_]?3D.*MERSI.*L1.*\d{8}[_-]?\d{4}.*\.(HDF5?|H5)$', SatelliteType.FY3D, ProductLevel.L1, 'fy3d_mersi_l1', 0.96),
 
     # Himawari NetCDF formats (various naming conventions)
     # Note: HSD binary (.dat/.bz2) format is not supported
     # Standard gridded format: H08_20230101_0300_xxx.nc
-    FilePatternRule(r'H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
-    FilePatternRule(r'H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    FilePatternRule(r'H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'himawari_l1b_nc', 0.90),
+    FilePatternRule(r'H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'himawari_l1b_nc', 0.90),
     # Alternative format: AHI_H08_20230101_0300.nc
-    FilePatternRule(r'AHI_H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
-    FilePatternRule(r'AHI_H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.90),
+    FilePatternRule(r'AHI_H08_\d{8}_\d{4}.*\.nc', SatelliteType.H08, ProductLevel.L1, 'himawari_l1b_nc', 0.90),
+    FilePatternRule(r'AHI_H09_\d{8}_\d{4}.*\.nc', SatelliteType.H09, ProductLevel.L1, 'himawari_l1b_nc', 0.90),
     # Himawari L2 NetCDF products
     FilePatternRule(r'H08.*L2.*\.nc', SatelliteType.H08, ProductLevel.L2, 'generic_nc', 0.85),
     FilePatternRule(r'H09.*L2.*\.nc', SatelliteType.H09, ProductLevel.L2, 'generic_nc', 0.85),
@@ -97,20 +97,20 @@ FILE_PATTERNS: List[FilePatternRule] = [
 
 # Fallback patterns (lower confidence, generic readers)
 FALLBACK_PATTERNS: List[FilePatternRule] = [
-    FilePatternRule(r'FY4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
-    FilePatternRule(r'FY-4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
-    FilePatternRule(r'FY_4B', SatelliteType.FY4B, ProductLevel.L1, 'agri_fy4b', 0.70),
-    FilePatternRule(r'FY4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
-    FilePatternRule(r'FY-4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
-    FilePatternRule(r'FY_4A', SatelliteType.FY4A, ProductLevel.L1, 'agri_fy4a', 0.70),
-    FilePatternRule(r'FY3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    FilePatternRule(r'FY-3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    FilePatternRule(r'FY_3D', SatelliteType.FY3D, ProductLevel.L1, 'mersi2_l1b', 0.70),
-    FilePatternRule(r'H08', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.70),
-    FilePatternRule(r'H09', SatelliteType.H09, ProductLevel.L1, 'ahi_l1b_gridded', 0.70),
-    FilePatternRule(r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'ahi_l1b_gridded', 0.60),
+    FilePatternRule(r'FY4B', SatelliteType.FY4B, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY-4B', SatelliteType.FY4B, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY_4B', SatelliteType.FY4B, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY4A', SatelliteType.FY4A, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY-4A', SatelliteType.FY4A, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY_4A', SatelliteType.FY4A, ProductLevel.L1, 'fy4_agri_l1', 0.70),
+    FilePatternRule(r'FY3D', SatelliteType.FY3D, ProductLevel.L1, 'fy3d_mersi_l1', 0.70),
+    FilePatternRule(r'FY-3D', SatelliteType.FY3D, ProductLevel.L1, 'fy3d_mersi_l1', 0.70),
+    FilePatternRule(r'FY_3D', SatelliteType.FY3D, ProductLevel.L1, 'fy3d_mersi_l1', 0.70),
+    FilePatternRule(r'H08', SatelliteType.H08, ProductLevel.L1, 'himawari_l1b_nc', 0.70),
+    FilePatternRule(r'H09', SatelliteType.H09, ProductLevel.L1, 'himawari_l1b_nc', 0.70),
+    FilePatternRule(r'HIMAWARI', SatelliteType.H08, ProductLevel.L1, 'himawari_l1b_nc', 0.60),
     # Fallback for NetCDF files
-    FilePatternRule(r'\.nc$', SatelliteType.UNKNOWN, ProductLevel.L1, 'ahi_l1b_gridded', 0.50),
+    FilePatternRule(r'\.nc$', SatelliteType.UNKNOWN, ProductLevel.L1, 'generic_nc', 0.50),
 ]
 
 
@@ -139,14 +139,14 @@ class FileTypeRecognizer:
     
     def recognize(self, file_path: str, use_cache: bool = True) -> FileRecognitionResult:
         """
-        Recognize file type and return direct reader recommendation.
+        Recognize file type and return direct format recommendation.
         
         Args:
             file_path: Path to the file
             use_cache: Whether to use caching
             
         Returns:
-            FileRecognitionResult with reader recommendation
+            FileRecognitionResult with format recommendation
         """
         # Check cache
         if use_cache and file_path in self._cache:
@@ -373,5 +373,5 @@ def recognize_files(file_paths: List[str]) -> List[FileRecognitionResult]:
 
 
 def get_recommended_reader(file_paths: List[str]) -> Optional[str]:
-    """Get the recommended reader for a list of files."""
+    """Get the recommended format identifier for a list of files."""
     return _recognizer.get_consensus_reader(file_paths)

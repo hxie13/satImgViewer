@@ -19,7 +19,7 @@ from .drivers.base import SatelliteFileInfo, ProcessingParams
 from .geometry import ProjectionFactory, ProjectionType
 from .pipelines import RGBCompositorFactory, EnhancementPipeline
 from .config import get_satellite_config, get_band_display_name
-from .file_recognizer import FileTypeRecognizer, get_recommended_reader
+from .file_recognizer import get_recommended_reader
 
 logger = logging.getLogger(__name__)
 
@@ -176,13 +176,13 @@ class SatelliteImageManager:
                 requested_type = pinned_driver_type or driver_type
                 current_type = self._infer_current_driver_type()
                 target_type = requested_type or current_type
-                # Always compute reader hint once so explicit driver mode can also use smart path.
+                # Compute format hint once to improve driver selection stability.
                 recommended_reader = get_recommended_reader(file_paths)
                 if recommended_reader:
                     self.logger.info(f"[SmartLoad] FileTypeRecognizer recommends: {recommended_reader}")
 
-                # Resolve the driver type implied by the recommended reader so that
-                # switching satellite type (e.g. FY-4 â†’ FY-3D) always creates a fresh driver.
+                # Resolve the driver type implied by the recommended format so that
+                # switching satellite type (e.g. FY-4 â†?FY-3D) always creates a fresh driver.
                 recommended_driver = None
                 if recommended_reader and recommended_reader != 'auto':
                     recommended_driver = DriverFactory._reader_to_driver_type(recommended_reader)
@@ -720,3 +720,4 @@ class SatelliteImageManager:
         """Context manager exit."""
         self.unload()
         return False
+
