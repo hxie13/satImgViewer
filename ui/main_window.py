@@ -458,12 +458,6 @@ class MainWindow(QMainWindow):
         self.preview_info_label.setText("Preview: cleared")
         self._set_ui_status("success", "Visualization cleared")
 
-    def _get_driver(self):
-        """Get the active driver (legacy or manager wrapper)."""
-        if self._manager:
-            return self._manager
-        return self.driver
-
     def load_data(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Data Folder")
         if not folder:
@@ -477,67 +471,53 @@ class MainWindow(QMainWindow):
         self._set_ui_status("loading", "Scanning folder...")
 
         try:
-            # Scan and group files
-            if self._manager:
-                # Use new manager API
-                files = self._manager.scan_directory(folder)
+            files = self._manager.scan_directory(folder)
 
-                if not files:
-                    QMessageBox.warning(self, "Error", "No supported satellite files found.")
-                    return
+            if not files:
+                QMessageBox.warning(self, "Error", "No supported satellite files found.")
+                return
 
-                # Identify satellite types for the files
-                file_info = self._manager.identify_files(files)
+            # Identify satellite types for the files
+            file_info = self._manager.identify_files(files)
 
-                # Determine dominant satellite type for loading
-                type_counts = {}
-                for info in file_info:
-                    if info.driver_type:
-                        type_counts[info.driver_type] = type_counts.get(info.driver_type, 0) + 1
+            # Determine dominant satellite type for loading
+            type_counts = {}
+            for info in file_info:
+                if info.driver_type:
+                    type_counts[info.driver_type] = type_counts.get(info.driver_type, 0) + 1
 
-                if not type_counts:
-                    QMessageBox.warning(self, "Error", "Could not determine satellite type.")
-                    return
+            if not type_counts:
+                QMessageBox.warning(self, "Error", "Could not determine satellite type.")
+                return
 
-                # Get dominant satellite type
-                dominant_type = max(type_counts, key=type_counts.get)
-                self._set_ui_status("loading", f"Detected satellite: {dominant_type}")
+            # Get dominant satellite type
+            dominant_type = max(type_counts, key=type_counts.get)
+            self._set_ui_status("loading", f"Detected satellite: {dominant_type}")
 
-                # Load first time group to get band information
-                # Group all files by timestamp for time-series playback
-                # Pass dominant_type to skip a redundant identify_files() call
-                time_groups = self._manager.get_time_series_groups(files, driver_type=dominant_type)
-                self.file_groups = time_groups
-                self._timeseries_controller.set_file_groups(time_groups)
+            # Group all files by timestamp for time-series playback.
+            # Pass dominant_type to skip a redundant identify_files() call.
+            time_groups = self._manager.get_time_series_groups(files, driver_type=dominant_type)
+            self.file_groups = time_groups
+            self._timeseries_controller.set_file_groups(time_groups)
 
-                if not self.file_groups:
-                    QMessageBox.warning(self, "Error", "No valid time-series groups found.")
-                    return
+            if not self.file_groups:
+                QMessageBox.warning(self, "Error", "No valid time-series groups found.")
+                return
 
-                # Set up UI controls immediately (don't wait for async frame load).
-                # The frame_loaded signal will fire when background loading completes.
-                self.time_slider.setEnabled(True)
-                self.time_slider.setRange(0, max(0, len(self.file_groups) - 1))
-                self.frame_index_spinbox.setRange(1, max(1, len(self.file_groups)))
-                self.frame_index_spinbox.setValue(1)
-                self.frame_index_spinbox.setEnabled(True)
-                self.jump_frame_button.setEnabled(True)
-                self.header_meta_label.setText(
-                    f"{dominant_type} | {len(self.file_groups)} frames detected"
-                )
-                self._sync_action_states()
-                # Start async first-frame load
-                self._timeseries_controller.load_frame(0, driver_type=dominant_type)
-            else:
-                # Use legacy driver API
-                groups = self.driver.scan_and_group_files(folder)
-
-                if not groups:
-                    QMessageBox.warning(self, "Error", "No supported satellite files found.")
-                    return
-
-                self.file_groups = groups
-                self.load_frame(0)
+            # Set up UI controls immediately (don't wait for async frame load).
+            # The frame_loaded signal will fire when background loading completes.
+            self.time_slider.setEnabled(True)
+            self.time_slider.setRange(0, max(0, len(self.file_groups) - 1))
+            self.frame_index_spinbox.setRange(1, max(1, len(self.file_groups)))
+            self.frame_index_spinbox.setValue(1)
+            self.frame_index_spinbox.setEnabled(True)
+            self.jump_frame_button.setEnabled(True)
+            self.header_meta_label.setText(
+                f"{dominant_type} | {len(self.file_groups)} frames detected"
+            )
+            self._sync_action_states()
+            # Start async first-frame load
+            self._timeseries_controller.load_frame(0, driver_type=dominant_type)
 
         except Exception as e:
             self._set_ui_status("error", f"Error loading data: {str(e)}")
@@ -673,18 +653,6 @@ class MainWindow(QMainWindow):
         self._set_ui_status("success", "Video Export Complete!")
         self._sync_action_states()
         QMessageBox.information(self, "Success", f"Video saved to:\n{path}")
-
-    def _execute_driver_load(self, files):
-        if self.driver.load_scene(files):
-            bands = self.driver.get_available_datasets()
-            self.band_list_widget.clear()
-            self.band_list_widget.addItems(sorted(bands))
-            
-            meta = self.driver.get_metadata()
-            self._set_ui_status("success", f"Loaded: {meta.get('platform')} | {meta.get('start_time')}")
-        else:
-            self._set_ui_status("error", "Failed to load scene.")
-            QMessageBox.critical(self, "Error", "Failed to load satellite data.\nCheck console for details.")
 
     def on_gamma_change(self, value):
         self.current_gamma = value / 10.0
