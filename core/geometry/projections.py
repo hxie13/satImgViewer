@@ -195,7 +195,7 @@ class ProjectionFactory:
             raise ValueError(f"Unknown projection: {proj_name}. "
                             f"Available: {cls.get_available()}")
 
-        # Native projection - return None to use Satpy's native resampler
+        # Native geostationary view: return None so drivers keep source geometry.
         if config.proj_type == ProjectionType.GEOSTATIONARY:
             return None
 

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import warnings
 
-from .interfaces import ISatelliteDataProvider
-
 
 _MIGRATION_MSG = (
     "SatpyDriver has been removed. Use core.manager.SatelliteImageManager and "
@@ -18,7 +16,7 @@ _MIGRATION_MSG = (
 )
 
 
-class SatpyDriver(ISatelliteDataProvider):
+class SatpyDriver:
     """
     Backward-compatibility shim for removed satpy-based driver.
 

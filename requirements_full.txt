@@ -5,8 +5,7 @@
 # Core UI
 PyQt6>=6.5
 
-# Satellite data processing (Full installation)
-satpy>=0.48
+# Satellite data processing (satpy-free direct I/O stack)
 h5netcdf>=1.0.0
 netCDF4>=1.6.0
 

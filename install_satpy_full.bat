@@ -1,8 +1,11 @@
 @echo off
 chcp 65001 >nul
 echo ==========================================
-echo Satpy Full Installation Script
+echo Direct I/O Full Environment Setup
 echo ==========================================
+echo.
+echo NOTE: satpy-based loading has been removed.
+echo This script now installs the satpy-free full dependency set.
 echo.
 
 REM Activate conda environment
@@ -17,45 +20,24 @@ if errorlevel 1 (
 echo Current environment: %CONDA_DEFAULT_ENV%
 echo.
 
-REM Check current satpy version
-echo [1/5] Checking current satpy installation...
-pip show satpy 2>nul | findstr "Version"
+echo [1/3] Installing full requirements (satpy-free)...
+pip install -r requirements_full.txt
 if errorlevel 1 (
-    echo satpy not found, will install fresh
-) else (
-    echo satpy found, will upgrade to full version
+    echo pip install failed, trying conda fallback for core packages...
+    conda install -c conda-forge h5py h5netcdf netCDF4 xarray pyresample pyproj dask distributed -y
 )
 echo.
 
-REM Install/upgrade satpy with all readers
-echo [2/5] Installing satpy with all readers...
-conda install -c conda-forge satpy -y
+echo [2/3] Verifying direct reader stack...
+python scripts/verify_readers.py
 if errorlevel 1 (
-    echo Conda install failed, trying pip...
-    pip install --upgrade satpy
+    echo Verification failed. Please review the error output above.
+    pause
+    exit /b 1
 )
 echo.
 
-REM Install optional dependencies for better performance
-echo [3/5] Installing performance optimization packages...
-conda install -c conda-forge h5netcdf xarray dask -y
-echo.
-
-REM Install FY-4 specific dependencies
-echo [4/5] Installing FY-4 AGRI specific dependencies...
-conda install -c conda-forge h5py netCDF4 -y
-echo.
-
-REM Verify installation
-echo [5/5] Verifying installation...
-echo Available satpy readers:
-python -c "import satpy; print('\n'.join(sorted(satpy.available_readers())))"
-echo.
-
-echo ==========================================
-echo Installation Complete!
-echo ==========================================
-echo.
+echo [3/3] Done.
 echo You can now run: python main.py
-echo The warnings should be eliminated.
+echo.
 pause
