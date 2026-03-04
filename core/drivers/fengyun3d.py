@@ -218,13 +218,41 @@ class FengYun3DDriver(BasePolarDriver):
     def _select_primary_file(self, file_paths: List[str]) -> Optional[str]:
         """Select the primary radiance file (HDF5 with MERSI in name)."""
         # Prefer files explicitly named as MERSI HDF5
+        radiance_candidates: List[str] = []
         for path in file_paths:
             fname = os.path.basename(path).upper()
             ext = os.path.splitext(fname)[1]
             if ext in {'.HDF', '.H5'} and 'MERSI' in fname:
                 # Exclude GEO files (they contain Lon/Lat, not radiance)
                 if not any(k in fname for k in ('GEO1K', 'GEODK', 'GEO250', '_GEO_')):
-                    return path
+                    radiance_candidates.append(path)
+
+        # Prefer radiance files with a usable dedicated GEO match.
+        if radiance_candidates:
+            try:
+                import h5py
+                from ..io.fy3d_reader import _find_geo_file
+
+                def _geo_has_lonlat(geo_path: str) -> bool:
+                    try:
+                        with h5py.File(geo_path, 'r') as gf:
+                            if 'Geolocation' in gf and hasattr(gf['Geolocation'], 'keys'):
+                                grp = gf['Geolocation']
+                                return ('Longitude' in grp and 'Latitude' in grp)
+                            return ('Longitude' in gf and 'Latitude' in gf)
+                    except Exception:
+                        return False
+
+                for path in radiance_candidates:
+                    geo = _find_geo_file(path)
+                    if geo and _geo_has_lonlat(geo):
+                        logger.info("[FY3D] Prefer file with dedicated GEO: %s", os.path.basename(path))
+                        return path
+            except Exception:
+                # Any failure in preference probing should not block loading.
+                pass
+
+            return radiance_candidates[0]
 
         # Fallback: first HDF5 file
         for path in file_paths:

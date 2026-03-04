@@ -228,7 +228,12 @@ class HimawariNCReader:
             last_exc = None
             for eng in engines:
                 try:
-                    self._ds = xr.open_dataset(self._path, engine=eng, mask_and_scale=False)
+                    self._ds = xr.open_dataset(
+                        self._path,
+                        engine=eng,
+                        mask_and_scale=False,
+                        decode_timedelta=False,
+                    )
                     break
                 except Exception as exc:
                     last_exc = exc

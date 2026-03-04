@@ -167,7 +167,40 @@ class FY3DReader:
         Returns:
             (lons, lats) as float32 2-D arrays, or (None, None) if unavailable.
         """
-        # 1a. Check 'Geolocation/' subgroup (Layout B: Data/Geolocation/*)
+        # 1. Prefer dedicated GEO file when available (often higher quality than
+        # embedded quick-look geolocation). If it fails, fall back to embedded.
+        if self._geo_f is None and self._geo_path:
+            try:
+                self._geo_f = h5py.File(self._geo_path, 'r')
+                logger.info(f"[FY3DReader] Opened GEO file: {os.path.basename(self._geo_path)}")
+            except Exception as exc:
+                logger.warning(
+                    "[FY3DReader] Cannot open GEO file %s (%s); falling back to embedded geolocation",
+                    os.path.basename(self._geo_path), exc
+                )
+                # Avoid retry spam on every call.
+                self._geo_path = None
+
+        if self._geo_f is not None:
+            lons = None
+            lats = None
+            # Common GEO-file layout: /Geolocation/{Longitude,Latitude}
+            if 'Geolocation' in self._geo_f and hasattr(self._geo_f['Geolocation'], 'keys'):
+                geo_grp = self._geo_f['Geolocation']
+                lons = _read_geo_var(geo_grp, ('Longitude', 'longitude', 'Lon', 'lon'))
+                lats = _read_geo_var(geo_grp, ('Latitude', 'latitude', 'Lat', 'lat'))
+            # Fallback: lon/lat variables at root level
+            if lons is None or lats is None:
+                lons = _read_geo_var(self._geo_f, ('Longitude', 'longitude', 'Lon', 'lon'))
+                lats = _read_geo_var(self._geo_f, ('Latitude', 'latitude', 'Lat', 'lat'))
+            if lons is not None and lats is not None:
+                logger.info("[FY3DReader] Using lon/lat from dedicated GEO file")
+                lons = np.where(np.abs(lons) < 360.0, lons, np.nan).astype(np.float32)
+                lats = np.where(np.abs(lats) <  90.1, lats, np.nan).astype(np.float32)
+                return lons, lats
+            logger.warning("[FY3DReader] Dedicated GEO file lacks Longitude/Latitude; falling back")
+
+        # 2a. Check embedded 'Geolocation/' subgroup (Layout B: Data/Geolocation/*)
         if 'Geolocation' in self._f and hasattr(self._f['Geolocation'], 'keys'):
             geo_grp = self._f['Geolocation']
             lons = _read_geo_var(geo_grp, ('Longitude', 'longitude', 'Lon', 'lon'))
@@ -178,7 +211,7 @@ class FY3DReader:
                 lats = np.where(np.abs(lats) <  90.1, lats, np.nan).astype(np.float32)
                 return lons, lats
 
-        # 1b. Check if lon/lat is at root level (some products embed them directly)
+        # 2b. Check lon/lat at root level (some products embed them directly)
         lons = _read_geo_var(self._f, ('Longitude', 'longitude', 'Lon', 'lon'))
         lats = _read_geo_var(self._f, ('Latitude', 'latitude', 'Lat', 'lat'))
         if lons is not None and lats is not None:
@@ -187,29 +220,8 @@ class FY3DReader:
             lats = np.where(np.abs(lats) <  90.1, lats, np.nan).astype(np.float32)
             return lons, lats
 
-        # 2. Open dedicated GEO file if available
-        if self._geo_f is None:
-            if self._geo_path:
-                try:
-                    self._geo_f = h5py.File(self._geo_path, 'r')
-                    logger.info(f"[FY3DReader] Opened GEO file: {os.path.basename(self._geo_path)}")
-                except Exception as exc:
-                    logger.error(f"[FY3DReader] Cannot open GEO file: {exc}")
-                    return None, None
-            else:
-                logger.warning("[FY3DReader] No GEO file; geolocation unavailable")
-                return None, None
-
-        lons = _read_geo_var(self._geo_f, ('Longitude', 'longitude', 'Lon', 'lon'))
-        lats = _read_geo_var(self._geo_f, ('Latitude', 'latitude', 'Lat', 'lat'))
-
-        if lons is None or lats is None:
-            logger.warning("[FY3DReader] Could not find Longitude/Latitude in GEO file")
-            return None, None
-
-        lons = np.where(np.abs(lons) < 360.0, lons, np.nan).astype(np.float32)
-        lats = np.where(np.abs(lats) <  90.1, lats, np.nan).astype(np.float32)
-        return lons, lats
+        logger.warning("[FY3DReader] Geolocation unavailable (no usable GEO/embedded lon-lat)")
+        return None, None
 
     def get_area_definition(self):
         """
@@ -337,9 +349,9 @@ class FY3DReader:
                 if actual in keys:
                     # For 3D datasets, verify the index is within bounds
                     if idx is not None and idx >= _ds_n_bands(full_path):
-                        logger.warning("[FY3DReader] Band %s idx=%d out of range "
-                                       "for %s (n=%d); skipping",
-                                       band, idx, full_path, _ds_n_bands(full_path))
+                        logger.debug("[FY3DReader] Band %s idx=%d out of range "
+                                     "for %s (n=%d); skipping",
+                                     band, idx, full_path, _ds_n_bands(full_path))
                         continue
                     self._eff_route[band] = (full_path, idx)
                     if band not in found:
@@ -536,8 +548,11 @@ def _find_geo_file(data_file: str) -> Optional[str]:
     """
     Attempt to locate the matching GEO file for a MERSI-2 radiance file.
 
-    Searches the same directory for files sharing the timestamp that contain
-    a GEO indicator ('GEO', 'GEO1K', 'GEODK', 'GEOLOC', etc.) in their name.
+    Searches:
+      1) the radiance file directory itself;
+      2) immediate GEO-like subdirectories (for example "GEO/").
+
+    Matching is based on shared timestamp and GEO indicators in filename.
 
     Typical naming:
       FY3D_MERSI_GBAL_L1_YYYYMMDD_HHMM_GEO1K_MS.HDF
@@ -552,28 +567,51 @@ def _find_geo_file(data_file: str) -> Optional[str]:
 
     ts = m.group(1)
 
+    # Build deterministic list of search directories: same folder first,
+    # then common GEO subfolders (and any immediate folder containing "GEO").
+    search_dirs = [directory]
+    for sub in ('GEO', 'Geo', 'geo'):
+        subdir = os.path.join(directory, sub)
+        if os.path.isdir(subdir) and subdir not in search_dirs:
+            search_dirs.append(subdir)
     try:
-        candidates = os.listdir(directory)
+        for entry in os.listdir(directory):
+            subdir = os.path.join(directory, entry)
+            if os.path.isdir(subdir) and 'GEO' in entry.upper() and subdir not in search_dirs:
+                search_dirs.append(subdir)
     except OSError:
+        pass
+
+    candidates: List[Tuple[str, str]] = []
+    for d in search_dirs:
+        try:
+            for fname in os.listdir(d):
+                full = os.path.join(d, fname)
+                if os.path.isfile(full):
+                    candidates.append((d, fname))
+        except OSError:
+            continue
+
+    if not candidates:
         return None
 
     # Pass 1: specific GEO suffixes (highest confidence)
     for geo_suffix in ('GEO1K', 'GEODK', 'GEO1KM', 'GEO250', 'GEO500', 'GEOLOC'):
         pattern = re.compile(rf'.*{ts}.*{geo_suffix}.*', re.IGNORECASE)
-        for fname in candidates:
+        for d, fname in candidates:
             if pattern.match(fname):
-                geo_path = os.path.join(directory, fname)
+                geo_path = os.path.join(d, fname)
                 if os.path.isfile(geo_path):
-                    logger.debug(f"[FY3DReader] Found GEO file: {fname}")
+                    logger.debug(f"[FY3DReader] Found GEO file: {geo_path}")
                     return geo_path
 
     # Pass 2: any file with same timestamp and 'GEO' anywhere in name
     loose = re.compile(rf'.*{ts}.*GEO.*', re.IGNORECASE)
-    for fname in candidates:
+    for d, fname in candidates:
         if loose.match(fname) and fname != basename:
-            geo_path = os.path.join(directory, fname)
+            geo_path = os.path.join(d, fname)
             if os.path.isfile(geo_path):
-                logger.debug(f"[FY3DReader] Found GEO file (loose match): {fname}")
+                logger.debug(f"[FY3DReader] Found GEO file (loose match): {geo_path}")
                 return geo_path
 
     return None
