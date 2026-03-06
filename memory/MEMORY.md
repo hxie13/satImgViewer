@@ -181,3 +181,51 @@ satImgViewer/
 - `python -m compileall -q core ui utils main.py`
 - Runtime smoke in `satImgLib`:
   - `ProjectionFactory._get_satellite_actual_extent(src_geos)` now returns dynamic bounds from lon/lat samples instead of fixed ranges.
+
+## 2026-03-06 Engineering Memory Update (Scene + Recipe Refactor)
+
+### Core refactor focus
+- Raised the runtime object model from raw file groups to normalized scenes:
+  - `SourceFileRecord` / `NormalizedScene` / `SceneCollection`
+  - shared analysis-grid baseline via `AnalysisGridDefinition`
+- Continued pushing the same idea downstream:
+  - scene-aware loading in manager / time-series controller
+  - scene-aware video export path
+  - unified render/export request objects and `ProductRecipe`
+
+### Current architecture progress
+- Ingest layer is now explicit:
+  - `core/ingest/` handles scan + recognize + scene normalization
+  - `core/scene/` defines normalized scene/grid models
+- Runtime loading is now dual-compatible but scene-first:
+  - `SatelliteImageManager.load_scene(scene)` added
+  - `FrameLoaderWorker` and `VideoExportWorker` can consume normalized scenes
+  - `AppState` now owns normalized scenes and keeps compatibility `file_groups`
+- Product request layer is now explicit:
+  - `RenderRequest`
+  - `StillExportRequest`
+  - `VideoExportRequest`
+  - `ProductRecipe`
+
+### What the UI now does
+- Folder loading builds `SceneCollection` first, instead of directly grouping raw files.
+- Main window now builds a `ProductRecipe` from current UI selections, then derives:
+  - preview request
+  - 3D texture request
+  - still export request
+  - video export request
+- This reduces duplicated parameter assembly in `main_window.py`.
+
+### Verification status
+- Passed:
+  - `python -m compileall -q core ui utils tests`
+  - `pytest tests/test_product_requests.py tests/test_manager_render_requests.py tests/test_app_state.py tests/test_scene_ingest.py tests/test_manager_scene_loading.py tests/test_driver_factory.py tests/test_timeseries_controller.py`
+- Latest result:
+  - `27 passed, 1 skipped`
+- Skipped item:
+  - Qt controller tests remain environment-dependent because current CLI runtime lacks usable PyQt6 runtime libraries.
+
+### Next recommended step
+- Promote `ProductRecipe` from a transient UI selection wrapper into a registry-backed standard product template system:
+  - examples: `NaturalColor`, `DustRGB`, `FogRGB`, `CTT Export`
+  - this would become the base for batch processing and formal product generation.

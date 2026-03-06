@@ -19,6 +19,7 @@ from utils.workers import FrameLoaderWorker
 
 if TYPE_CHECKING:
     from core.manager import SatelliteImageManager
+    from core.scene import NormalizedScene
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,15 @@ class TimeSeriesController(QObject):
     def set_file_groups(self, file_groups: List[List[str]]) -> None:
         """Store all time-series file groups in state."""
         self._cancel_current_worker()
-        self._state.file_groups = list(file_groups) if file_groups else []
-        self._state.current_frame_index = -1
+        self._state.set_file_groups(file_groups)
+        self._pinned_driver_type = None
+        self._bad_frame_indices.clear()
+        self._loading_index = -1
+
+    def set_scenes(self, scenes: List[NormalizedScene]) -> None:
+        """Store normalized scenes and maintain file_groups as a compatibility view."""
+        self._cancel_current_worker()
+        self._state.set_normalized_scenes(scenes)
         self._pinned_driver_type = None
         self._bad_frame_indices.clear()
         self._loading_index = -1
@@ -87,11 +95,11 @@ class TimeSeriesController(QObject):
           - frame_loaded(index, total, time_str) on success
           - error(message) on failure
         """
-        if not self._state.file_groups:
-            logger.warning("[TSCtrl] No file groups loaded")
+        total = self._state.total_frames
+        if total <= 0:
+            logger.warning("[TSCtrl] No frame sources loaded")
             return False
 
-        total = self._state.total_frames
         if index < 0 or index >= total:
             logger.warning(f"[TSCtrl] Frame index {index} out of range [0, {total})")
             return False
@@ -102,13 +110,22 @@ class TimeSeriesController(QObject):
         # Cancel any in-progress load to prevent frame ordering races
         self._cancel_current_worker()
 
-        files = self._state.file_groups[index]
+        scene = None
+        if index < len(self._state.normalized_scenes):
+            scene = self._state.normalized_scenes[index]
+        else:
+            scene = None
+        files = self._state.get_frame_files(index)
+
         self._loading_index = index
         self.status.emit(f"Loading frame {index + 1}/{total}...")
         self.frame_loading.emit()
 
         worker = FrameLoaderWorker(
-            self._manager, files, self._pinned_driver_type
+            self._manager,
+            files=files,
+            pinned_driver_type=self._pinned_driver_type,
+            scene=scene,
         )
         self._frame_worker = worker
         worker.frame_loaded.connect(

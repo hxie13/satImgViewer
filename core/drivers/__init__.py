@@ -206,11 +206,9 @@ class DriverFactory:
         if fmt and fmt != "auto":
             # Use smart file recognizer result
             logger.info(f"Using FileTypeRecognizer recommendation: {fmt}")
-            
+             
             # Determine driver type from reader name
-            driver_type = cls._reader_to_driver_type(fmt)
-            if driver_type is None:
-                driver_type = cls._infer_driver_type_from_generic_reader(file_paths, fmt)
+            driver_type = cls.resolve_driver_type(fmt, file_paths)
             if driver_type:
                 return cls.create_driver(driver_type)
         
@@ -262,6 +260,25 @@ class DriverFactory:
             'himawari_l1b_nc': 'himawari',
         }
         return reader_map.get(reader_name)
+
+    @classmethod
+    def resolve_driver_type(
+        cls,
+        reader_name: Optional[str],
+        file_paths: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Resolve a driver type from a reader hint and optional file list.
+
+        This public helper is used by the new ingest normalization layer so the
+        driver resolution logic is no longer trapped behind private methods.
+        """
+        if not reader_name or reader_name == "auto":
+            return None
+        driver_type = cls._reader_to_driver_type(reader_name)
+        if driver_type is not None:
+            return driver_type
+        return cls._infer_driver_type_from_generic_reader(file_paths or [], reader_name)
 
     @classmethod
     def _infer_driver_type_from_generic_reader(cls, file_paths: List[str], reader_name: str) -> Optional[str]:

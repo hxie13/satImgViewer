@@ -15,6 +15,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from core.app_state import AppState
 from core.config import PROJECTION_GRID_EXTENTS, PROJECTION_GRID_SHAPES
 from core.geo_utils import get_geographic_extent
+from core.product_requests import RenderRequest
 from utils.workers import ImageLoaderWorker
 
 if TYPE_CHECKING:
@@ -71,27 +72,15 @@ class ImageViewController(QObject):
     # Public API
     # ------------------------------------------------------------------
 
-    def generate_image(
+    def generate_render_request(
         self,
-        bands: list,
-        projection: str,
-        gamma: float,
-        output_size: Optional[Tuple[int, int]] = None,
-        quality_profile: str = "preview_fast",
-        resample_method: str = "nearest",
+        request: RenderRequest,
+        *,
         need_3d_texture: bool = False,
     ) -> None:
-        """Start background image generation for the 2D view."""
+        """Start background image generation for a normalized render request."""
         frame_idx = self._state.current_frame_index
-        req_key = (
-            frame_idx,
-            tuple(bands),
-            projection,
-            round(float(gamma), 3),
-            output_size,
-            quality_profile,
-            resample_method,
-        )
+        req_key = request.cache_key(frame_idx)
 
         # LRU cache hit: emit immediately.
         cached = self._preview_cache.get(req_key)
@@ -105,25 +94,17 @@ class ImageViewController(QObject):
             self.status.emit("Image ready (cache hit).")
             return
 
-        self._state.selected_bands = list(bands)
-        self._state.current_projection = projection
-        self._state.gamma = float(gamma)
+        self._state.selected_bands = list(request.bands)
+        self._state.current_projection = request.projection
+        self._state.gamma = float(request.gamma)
 
         self._cancel_and_retire("_worker")
-
-        params = {
-            "gamma": gamma,
-            "proj_name": projection,
-            "output_size": output_size,
-            "quality_profile": quality_profile,
-            "resample_method": resample_method,
-        }
 
         self._request_seq += 1
         seq = self._request_seq
         self._seq_to_2d_key[seq] = req_key
         self._seq_need_3d[seq] = bool(need_3d_texture)
-        worker = ImageLoaderWorker(self._manager, bands, params)
+        worker = ImageLoaderWorker(self._manager, request)
         self._worker = worker
 
         worker.data_ready.connect(
@@ -134,21 +115,31 @@ class ImageViewController(QObject):
         worker.start()
         self.status.emit("Generating image...")
 
-    def generate_3d_texture(
+    def generate_image(
         self,
         bands: list,
+        projection: str,
         gamma: float,
         output_size: Optional[Tuple[int, int]] = None,
+        quality_profile: str = "preview_fast",
+        resample_method: str = "nearest",
+        need_3d_texture: bool = False,
     ) -> None:
-        """Start background generation of a plate-carree texture for the 3D globe."""
-        frame_idx = self._state.current_frame_index
-        req_key = (
-            frame_idx,
-            tuple(bands),
-            round(float(gamma), 3),
-            output_size,
-            "plate_carree_global",
+        """Backward-compatible wrapper for 2D image generation."""
+        request = RenderRequest(
+            bands=tuple(bands),
+            projection=projection,
+            gamma=gamma,
+            output_size=output_size,
+            quality_profile=quality_profile,
+            resample_method=resample_method,
         )
+        self.generate_render_request(request, need_3d_texture=need_3d_texture)
+
+    def generate_texture_request(self, request: RenderRequest) -> None:
+        """Start background generation of a normalized 3D texture request."""
+        frame_idx = self._state.current_frame_index
+        req_key = request.cache_key(frame_idx)
 
         cached = self._texture_cache.get(req_key)
         if cached is not None:
@@ -162,18 +153,10 @@ class ImageViewController(QObject):
 
         self._cancel_and_retire("_worker_3d")
 
-        params = {
-            "gamma": gamma,
-            "proj_name": "plate_carree_global",
-            "output_size": output_size,
-            "quality_profile": "preview_fast",
-            "resample_method": "nearest",
-        }
-
         self._request_seq_3d += 1
         seq = self._request_seq_3d
         self._seq_to_3d_key[seq] = req_key
-        worker = ImageLoaderWorker(self._manager, bands, params)
+        worker = ImageLoaderWorker(self._manager, request)
         self._worker_3d = worker
 
         worker.data_ready.connect(
@@ -182,6 +165,20 @@ class ImageViewController(QObject):
         worker.error.connect(lambda msg, s=seq: self._on_3d_error(msg, s))
         worker.finished.connect(lambda w=worker: self._on_worker_finished(w, "_worker_3d"))
         worker.start()
+
+    def generate_3d_texture(
+        self,
+        bands: list,
+        gamma: float,
+        output_size: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """Backward-compatible wrapper for 3D texture generation."""
+        request = RenderRequest.globe_texture(
+            bands=tuple(bands),
+            gamma=gamma,
+            output_size=output_size,
+        )
+        self.generate_texture_request(request)
 
     def cancel(self) -> None:
         """Request cancellation for running workers."""

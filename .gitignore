@@ -70,7 +70,8 @@ conda-env.yml
 !ui/icon.png
 
 # Project directories (local development only)
-tests/
+tests/*
+!tests/*.py
 docs/
 
 # Generated artifacts

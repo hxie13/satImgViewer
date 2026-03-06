@@ -16,10 +16,13 @@ import numpy as np
 
 from .drivers import DriverFactory, BaseSatelliteDriver
 from .drivers.base import SatelliteFileInfo, ProcessingParams
+from .ingest import SceneIngestService
 from .geometry import ProjectionFactory, ProjectionType
 from .pipelines import RGBCompositorFactory, EnhancementPipeline
+from .product_requests import RenderRequest, StillExportRequest
 from .config import get_satellite_config, get_band_display_name
 from .file_recognizer import get_recommended_format
+from .scene import NormalizedScene, SceneCollection
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +55,10 @@ class SatelliteImageManager:
         self.config = config or {}
         self._driver: Optional[BaseSatelliteDriver] = None
         self._driver_type: Optional[str] = None
+        self._current_scene: Optional[NormalizedScene] = None
         self._pipeline = EnhancementPipeline.create_default()
         self._compositor = RGBCompositorFactory.create('linear')
+        self._scene_service = SceneIngestService()
 
         # Cache for time-series data
         self._time_groups: List[List[str]] = []
@@ -115,6 +120,32 @@ class SatelliteImageManager:
             List of SatelliteFileInfo objects
         """
         return DriverFactory.identify_files(file_paths)
+
+    def build_scene_collection(
+        self,
+        directory: Optional[str] = None,
+        *,
+        file_paths: Optional[List[str]] = None,
+        analysis_grid_id: str = "plate_carree_global",
+        probe_metadata: bool = True,
+    ) -> SceneCollection:
+        """
+        Build normalized scenes with a shared analysis-grid baseline.
+
+        This is the new ingest-time entrypoint for downstream analysis and
+        fusion, replacing direct dependence on raw file lists.
+        """
+        if directory is not None:
+            return self._scene_service.build_scene_collection(
+                directory,
+                analysis_grid_id=analysis_grid_id,
+                probe_metadata=probe_metadata,
+            )
+        return self._scene_service.normalize_file_paths(
+            file_paths or [],
+            analysis_grid_id=analysis_grid_id,
+            probe_metadata=probe_metadata,
+        )
 
     def get_time_series_groups(self, file_paths: List[str],
                                driver_type: Optional[str] = None) -> List[List[str]]:
@@ -220,6 +251,7 @@ class SatelliteImageManager:
                     # Build time groups
                     self._time_groups = self._driver.get_time_series_groups(file_paths)
                     self._current_frame = 0
+                    self._current_scene = None
                 else:
                     # If reusing current driver failed and type wasn't explicit, fallback to auto-detection.
                     if should_reuse and requested_type is None:
@@ -245,6 +277,60 @@ class SatelliteImageManager:
             finally:
                 dt_ms = (time.perf_counter() - t0) * 1000.0
                 self.logger.info(f"[Perf] load_files: {dt_ms:.1f} ms")
+
+    def load_scene(self, scene: NormalizedScene, reuse_session: bool = True) -> bool:
+        """
+        Load a normalized scene object instead of a raw file list.
+
+        This is the new entrypoint for unified analysis objects with an explicit
+        common-grid baseline for later visualization and fusion.
+        """
+        if scene is None:
+            self.logger.error("No scene provided to load_scene")
+            return False
+
+        file_paths = scene.file_paths
+        if not file_paths:
+            self.logger.error("Scene has no file paths: %s", scene.scene_id)
+            return False
+
+        t0 = time.perf_counter()
+        with self._lock:
+            try:
+                requested_type = scene.driver_type
+                current_type = self._infer_current_driver_type()
+                should_reuse = (
+                    reuse_session and
+                    self._driver is not None and
+                    requested_type is not None and
+                    current_type == requested_type
+                )
+
+                if not should_reuse:
+                    if requested_type:
+                        self._driver = DriverFactory.create_driver(requested_type)
+                        self._driver_type = requested_type
+                    else:
+                        self._driver = DriverFactory.create_from_files(
+                            file_paths,
+                            preferred_format=scene.reader_type,
+                        )
+                        self._driver_type = self._infer_current_driver_type()
+                elif self._driver_type is None:
+                    self._driver_type = current_type
+
+                success = bool(self._driver and self._driver.load_scene(scene))
+                if success:
+                    self._current_scene = scene
+                    self._time_groups = [list(file_paths)]
+                    self._current_frame = 0
+                return success
+            except Exception as exc:
+                self.logger.error(f"Error loading scene {scene.scene_id}: {exc}")
+                return False
+            finally:
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                self.logger.info(f"[Perf] load_scene: {dt_ms:.1f} ms")
 
     def reload_current(self, file_paths: List[str]) -> bool:
         """
@@ -285,6 +371,7 @@ class SatelliteImageManager:
                 self._driver.unload()
                 self._driver = None
             self._driver_type = None
+            self._current_scene = None
             self._time_groups.clear()
             self._current_frame = 0
 
@@ -304,6 +391,11 @@ class SatelliteImageManager:
         if self._driver_type:
             return self._driver_type
         return self._infer_current_driver_type()
+
+    @property
+    def current_scene(self) -> Optional[NormalizedScene]:
+        """Return the currently loaded normalized scene, if any."""
+        return self._current_scene
 
     def _infer_current_driver_type(self) -> Optional[str]:
         """Infer current driver type by matching class against DriverFactory registry."""
@@ -379,30 +471,25 @@ class SatelliteImageManager:
         Returns:
             Tuple of (image_array, area_definition)
         """
+        request = RenderRequest(
+            bands=tuple(bands),
+            gamma=gamma,
+            projection=proj_name,
+            output_size=size,
+            quality_profile=quality_profile,
+            resample_method=resample_method,
+        )
+        return self.process_render_request(request)
+
+    def process_render_request(self, request: RenderRequest) -> Tuple[np.ndarray, Any]:
+        """Generate an image from a normalized render request."""
         if not self.is_loaded:
             from .exceptions import SatDataLoadError
             raise SatDataLoadError("No satellite data is currently loaded. Please load data first.")
 
         t0 = time.perf_counter()
         with self._lock:
-            # Pick runtime defaults by quality profile.
-            if resample_method is None:
-                if quality_profile == "preview_fast":
-                    resample_method = "nearest"
-                elif quality_profile == "export_high":
-                    resample_method = "bilinear"
-                else:
-                    resample_method = "nearest"
-
-            # Build processing params
-            params = ProcessingParams(
-                bands=bands,
-                gamma=gamma,
-                output_size=size,
-                output_proj=proj_name,
-                resample_method=resample_method,
-                quality_profile=quality_profile,
-            )
+            params = request.to_processing_params()
 
             # Generate image via driver
             image, area_def = self._driver.request_image(params)
@@ -411,7 +498,9 @@ class SatelliteImageManager:
             image = self._pipeline.enhance(image)
 
         dt_ms = (time.perf_counter() - t0) * 1000.0
-        self.logger.info(f"[Perf] process_image: {dt_ms:.1f} ms (profile={quality_profile})")
+        self.logger.info(
+            f"[Perf] process_image: {dt_ms:.1f} ms (profile={request.quality_profile})"
+        )
         return image, area_def
 
     def generate_rgb(self,
@@ -594,46 +683,59 @@ class SatelliteImageManager:
         Returns:
             Dictionary with export result
         """
+        request = StillExportRequest(
+            output_path=output_path,
+            render_request=RenderRequest(
+                bands=tuple(bands),
+                gamma=gamma,
+                projection=proj_name,
+                quality_profile='export_high',
+            ),
+            format=format,
+        )
+        return self.export_render_request(request)
+
+    def export_render_request(self, request: StillExportRequest) -> Dict[str, Any]:
+        """Export a rendered image described by a normalized export request."""
         if not self.is_loaded:
             raise ValueError("No data loaded")
 
         t0 = time.perf_counter()
 
         # Generate image
-        image, area_def = self.process_image(
-            bands=bands,
-            gamma=gamma,
-            proj_name=proj_name,
-            quality_profile='export_high',
-        )
+        image, area_def = self.process_render_request(request.render_request)
 
         # Convert to uint8
         img_uint8 = (np.clip(image, 0, 1) * 255).astype(np.uint8)
 
         # Ensure directory exists
-        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        os.makedirs(os.path.dirname(request.output_path) or '.', exist_ok=True)
 
         # Save based on format
         try:
             from PIL import Image
 
-            if format == 'png':
-                img = Image.fromarray(img_uint8, mode='RGB')
-                img.save(output_path)
-            elif format == 'geotiff':
-                self._export_geotiff(output_path, image, area_def)
-            else:
-                raise ValueError(f"Unsupported format: {format}")
+            export_format = request.resolved_format()
 
-            return {'success': True, 'path': output_path}
+            if export_format == 'png':
+                img = Image.fromarray(img_uint8, mode='RGB')
+                img.save(request.output_path)
+            elif export_format == 'geotiff':
+                self._export_geotiff(request.output_path, image, area_def)
+            else:
+                raise ValueError(f"Unsupported format: {export_format}")
+
+            return {'success': True, 'path': request.output_path}
 
         except ImportError:
             self.logger.warning("PIL not available, using numpy save")
-            np.save(output_path.replace('.png', '.npy'), image)
-            return {'success': True, 'path': output_path}
+            np.save(request.output_path.replace('.png', '.npy'), image)
+            return {'success': True, 'path': request.output_path}
         finally:
             dt_ms = (time.perf_counter() - t0) * 1000.0
-            self.logger.info(f"[Perf] export_image: {dt_ms:.1f} ms ({format})")
+            self.logger.info(
+                f"[Perf] export_image: {dt_ms:.1f} ms ({request.resolved_format()})"
+            )
 
     def _export_geotiff(self, output_path: str, image: np.ndarray,
                         area_def: Any) -> None:

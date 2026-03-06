@@ -15,6 +15,8 @@ from core.manager import SatelliteImageManager
 from core.geometry import get_available_projections
 from core.config import PROJECTION_GRID_SHAPES, PROJECTION_GRID_EXTENTS
 from core.app_state import AppState
+from core.product_requests import ProductRecipe
+from core.scene import NormalizedScene, SceneCollection
 from ui.canvas import GeoCanvas
 from ui.globe_canvas import Globe3DCanvas
 from ui.widgets import DraggableList, BandDropZone
@@ -64,12 +66,10 @@ class MainWindow(QMainWindow):
         self._export_controller.video_error.connect(self._on_video_ctrl_error)
         self._export_controller.status.connect(lambda m: self._on_controller_status("export", m))
 
-        # Legacy state aliases kept for methods not yet migrated to controllers
+        # Remaining local render/cache fields not yet fully folded into AppState
         self.current_gamma = self._state.gamma
         self.cached_img    = None   # replaced by self._state.cached_img
         self.cached_extent = None   # replaced by self._state.cached_extent
-        self.file_groups   = self._state.file_groups
-        self.current_frame_index = self._state.current_frame_index
         self.current_bands = []
         self._band_dataset_signature = None
         self._last_render_request_signature = None
@@ -448,7 +448,7 @@ class MainWindow(QMainWindow):
             metadata = {}
 
         frame_key = (
-            self.current_frame_index,
+            self._state.current_frame_index,
             metadata.get("start_time"),
             overlap,
         )
@@ -471,6 +471,44 @@ class MainWindow(QMainWindow):
             )
 
         QMessageBox.information(self, "FY3D Projection Risk", message)
+
+    @staticmethod
+    def _summarize_scene_values(values) -> str:
+        unique_values = sorted({value for value in values if value})
+        if not unique_values:
+            return "unknown"
+        if len(unique_values) == 1:
+            return unique_values[0]
+        return f"{unique_values[0]} +{len(unique_values) - 1}"
+
+    def _format_scene_collection_summary(self, collection: SceneCollection) -> str:
+        """Build a short header summary for a normalized scene batch."""
+        scenes = collection.scenes
+        if not scenes:
+            return "No normalized scenes loaded"
+
+        platforms = self._summarize_scene_values(
+            scene.satellite_platform for scene in scenes
+        )
+        sensors = self._summarize_scene_values(
+            scene.sensor for scene in scenes
+        )
+        grid_id = scenes[0].analysis_grid.grid_id
+        summary = (
+            f"{platforms}/{sensors} | {len(scenes)} normalized scenes | grid: {grid_id}"
+        )
+        unmatched_count = len(collection.unmatched_files)
+        if unmatched_count:
+            summary += f" | {unmatched_count} unmatched files"
+        return summary
+
+    @staticmethod
+    def _format_scene_brief(scene: NormalizedScene) -> str:
+        """Build a short scene label for the currently loaded frame."""
+        source_parts = [part for part in (scene.satellite_platform, scene.sensor) if part]
+        source_label = "/".join(source_parts) if source_parts else "Unknown source"
+        product_label = scene.product_code or scene.product_level or "product"
+        return f"{source_label} {product_label} | grid: {scene.analysis_grid.grid_id}"
 
     def _set_ui_status(self, level: str, message: str) -> None:
         level = level if level in {"idle", "loading", "success", "error"} else "idle"
@@ -514,27 +552,28 @@ class MainWindow(QMainWindow):
 
         # Keep Video button clickable once data exists; detailed RGB checks are
         # handled in export_video_sequence() with explicit user feedback.
-        has_groups = bool(self.file_groups) or bool(self._state.file_groups)
+        has_groups = self._state.total_frames > 0
         self.video_button.setEnabled(has_groups and not self.cancel_video_button.isEnabled())
-        self.previous_button.setEnabled(bool(self.file_groups))
-        self.next_button.setEnabled(bool(self.file_groups))
-        can_jump = bool(self.file_groups)
+        self.previous_button.setEnabled(has_groups)
+        self.next_button.setEnabled(has_groups)
+        can_jump = has_groups
         self.frame_index_spinbox.setEnabled(can_jump)
         self.jump_frame_button.setEnabled(can_jump)
 
     def _focus_frame_input(self):
-        if not self.file_groups:
+        if self._state.total_frames <= 0:
             return
         self.frame_index_spinbox.setFocus()
         self.frame_index_spinbox.selectAll()
 
     def _jump_to_spin_frame(self):
-        if not self.file_groups:
+        total_frames = self._state.total_frames
+        if total_frames <= 0:
             return
         target = int(self.frame_index_spinbox.value()) - 1
-        if target == self.current_frame_index:
+        if target == self._state.current_frame_index:
             return
-        if target < 0 or target >= len(self.file_groups):
+        if target < 0 or target >= total_frames:
             self._set_ui_status("error", f"Frame out of range: {target + 1}")
             return
         self.load_frame(target)
@@ -613,14 +652,11 @@ class MainWindow(QMainWindow):
 
         self._manager.unload()
 
-        self.file_groups = []
-        self.current_frame_index = -1
         self.current_bands = []
         self._band_dataset_signature = None
         self._last_render_request_signature = None
         self._fy3d_china_projection_warn_key = None
-        self._state.file_groups = []
-        self._state.current_frame_index = -1
+        self._state.clear_time_series()
         self._state.selected_bands = []
         self._state.clear_image_cache()
 
@@ -663,53 +699,46 @@ class MainWindow(QMainWindow):
         self._set_ui_status("loading", "Scanning folder...")
 
         try:
-            files = self._manager.scan_directory(folder)
+            scene_collection = self._manager.build_scene_collection(
+                folder,
+                probe_metadata=False,
+            )
+            scenes = list(scene_collection.scenes)
 
-            if not files:
-                QMessageBox.warning(self, "Error", "No supported satellite files found.")
+            if not scenes:
+                if scene_collection.unmatched_files:
+                    message = (
+                        "No normalized scenes could be built from the selected folder.\n"
+                        f"Unmatched files: {len(scene_collection.unmatched_files)}"
+                    )
+                else:
+                    message = "No supported satellite scenes found."
+                QMessageBox.warning(self, "Error", message)
                 return
 
-            # Identify satellite types for the files
-            file_info = self._manager.identify_files(files)
+            self._timeseries_controller.set_scenes(scenes)
 
-            # Determine dominant satellite type for loading
-            type_counts = {}
-            for info in file_info:
-                if info.driver_type:
-                    type_counts[info.driver_type] = type_counts.get(info.driver_type, 0) + 1
-
-            if not type_counts:
-                QMessageBox.warning(self, "Error", "Could not determine satellite type.")
-                return
-
-            # Get dominant satellite type
-            dominant_type = max(type_counts, key=type_counts.get)
-            self._set_ui_status("loading", f"Detected satellite: {dominant_type}")
-
-            # Group all files by timestamp for time-series playback.
-            # Pass dominant_type to skip a redundant identify_files() call.
-            time_groups = self._manager.get_time_series_groups(files, driver_type=dominant_type)
-            self.file_groups = time_groups
-            self._timeseries_controller.set_file_groups(time_groups)
-
-            if not self.file_groups:
-                QMessageBox.warning(self, "Error", "No valid time-series groups found.")
-                return
-
+            frame_count = len(scenes)
             # Set up UI controls immediately (don't wait for async frame load).
             # The frame_loaded signal will fire when background loading completes.
             self.time_slider.setEnabled(True)
-            self.time_slider.setRange(0, max(0, len(self.file_groups) - 1))
-            self.frame_index_spinbox.setRange(1, max(1, len(self.file_groups)))
+            self.time_slider.setRange(0, max(0, frame_count - 1))
+            self.frame_index_spinbox.setRange(1, max(1, frame_count))
             self.frame_index_spinbox.setValue(1)
             self.frame_index_spinbox.setEnabled(True)
             self.jump_frame_button.setEnabled(True)
-            self.header_meta_label.setText(
-                f"{dominant_type} | {len(self.file_groups)} frames detected"
-            )
+            self.header_meta_label.setText(self._format_scene_collection_summary(scene_collection))
+            warning_count = len(scene_collection.warnings)
+            if warning_count:
+                self._set_ui_status(
+                    "loading",
+                    f"Detected {frame_count} normalized scenes ({warning_count} ingest warnings)",
+                )
+            else:
+                self._set_ui_status("loading", f"Detected {frame_count} normalized scenes")
             self._sync_action_states()
             # Start async first-frame load
-            self._timeseries_controller.load_frame(0, driver_type=dominant_type)
+            self._timeseries_controller.load_frame(0)
 
         except Exception as e:
             self._set_ui_status("error", f"Error loading data: {str(e)}")
@@ -750,13 +779,15 @@ class MainWindow(QMainWindow):
     def _update_time_label(self, meta, index=None):
         """Update time label from metadata."""
         time_str = meta.get('start_time', 'Unknown')
-        total = len(self.file_groups) if self.file_groups else 1
-        idx = index + 1 if index is not None else (self.current_frame_index + 1 if self.current_frame_index >= 0 else 1)
+        total = self._state.total_frames if self._state.total_frames > 0 else 1
+        current_index = self._state.current_frame_index
+        idx = index + 1 if index is not None else (current_index + 1 if current_index >= 0 else 1)
         self.time_label.setText(f"{time_str}\n[{idx}/{total}]")
 
     # Load specific frame
     def load_frame(self, index):
-        if not self.file_groups or index < 0 or index >= len(self.file_groups):
+        total_frames = self._state.total_frames
+        if total_frames <= 0 or index < 0 or index >= total_frames:
             return
         # load_frame now returns True immediately (async start); errors arrive via signal
         self._timeseries_controller.load_frame(index)
@@ -770,7 +801,7 @@ class MainWindow(QMainWindow):
 
     def on_slider_move(self, value):
         # Update label while dragging without triggering heavy recomputation.
-        total = len(self.file_groups) if self.file_groups else 0
+        total = self._state.total_frames
         if total > 0:
             self.time_label.setText(f"Frame Preview\n[{value + 1}/{total}]")
             self.frame_info_label.setText(f"Frame: {value + 1}/{total}")
@@ -782,7 +813,7 @@ class MainWindow(QMainWindow):
 
     def on_slider_released(self):
         value = self.time_slider.value()
-        if value != self.current_frame_index:
+        if value != self._state.current_frame_index:
             self.load_frame(value)
 
     def _on_tab_changed(self, index: int):
@@ -805,13 +836,12 @@ class MainWindow(QMainWindow):
             return
         idx = self._pending_slider_index
         self._pending_slider_index = None
-        if idx != self.current_frame_index:
+        if idx != self._state.current_frame_index:
             self.load_frame(idx)
 
     # Video export button callback
     def export_video_sequence(self):
-        groups = self._state.file_groups if self._state.file_groups else self.file_groups
-        if not groups:
+        if self._state.total_frames <= 0:
             self._set_ui_status("error", "Video export blocked: no time-series data loaded")
             QMessageBox.information(self, "Info", "No time-series data loaded yet. Please load a folder first.")
             return
@@ -830,13 +860,13 @@ class MainWindow(QMainWindow):
         if not output_file:
             return
 
-        proj_id = self.projection_combobox.currentData()
-        started = self._export_controller.start_video_export(
-            output_path=output_file,
-            bands=bands,
-            gamma=self.current_gamma,
-            projection=proj_id,
-            fps=10,
+        recipe = self._build_recipe_from_bands(bands)
+        started = self._export_controller.start_video_export_request(
+            recipe.video_export_request(
+                output_file,
+                fps=10,
+                pinned_driver_type=self._manager.current_driver_type,
+            )
         )
         if started:
             self.video_button.setEnabled(False)
@@ -882,31 +912,23 @@ class MainWindow(QMainWindow):
                 self._set_ui_status("error", "Generate blocked: incomplete band selection")
             return
 
-        proj_id = self.projection_combobox.currentData()
+        recipe = self._build_recipe_from_bands(bands)
         if not silent:
-            self._maybe_warn_fy3d_china_projection_risk(proj_id=proj_id)
-        self.current_bands = bands.copy()
-        self._state.selected_bands = bands.copy()
-        self._state.gamma = self.current_gamma
-        self._state.current_projection = proj_id
+            self._maybe_warn_fy3d_china_projection_risk(proj_id=recipe.projection)
+        self.current_bands = list(recipe.bands)
+        self._state.selected_bands = list(recipe.bands)
+        self._state.gamma = recipe.gamma
+        self._state.current_projection = recipe.projection
 
         preview_size = self._get_preview_output_size(max_side=1600)
         need_3d_texture = self.view_tabs.currentIndex() == 1
-        self._last_render_request_signature = (
-            self.current_frame_index,
-            tuple(bands),
-            proj_id,
-            round(float(self.current_gamma), 3),
+        self._last_render_request_signature = recipe.preview_signature(
+            self._state.current_frame_index,
             preview_size,
-            bool(need_3d_texture),
+            need_3d_texture=need_3d_texture,
         )
-        self._image_controller.generate_image(
-            bands=bands,
-            projection=proj_id,
-            gamma=self.current_gamma,
-            output_size=preview_size,
-            quality_profile="preview_fast",
-            resample_method="nearest",
+        self._image_controller.generate_render_request(
+            recipe.preview_request(preview_size),
             need_3d_texture=need_3d_texture,
         )
         self._set_ui_status("loading", "Rendering preview...")
@@ -928,6 +950,16 @@ class MainWindow(QMainWindow):
         if selected and selected.text() in valid_band_names:
             return [selected.text()]
         return []
+
+    def _build_recipe_from_bands(self, bands) -> ProductRecipe:
+        """Build a normalized product recipe from current UI selections."""
+        proj_id = self.projection_combobox.currentData()
+        projection = proj_id if isinstance(proj_id, str) else "geostationary_native"
+        return ProductRecipe(
+            bands=tuple(bands),
+            projection=projection,
+            gamma=self.current_gamma,
+        )
 
     def _get_preview_output_size(self, max_side: int = 1600):
         """Estimate a fast preview output size from the 2D canvas size."""
@@ -1022,10 +1054,9 @@ class MainWindow(QMainWindow):
                 logger.info("[3D] No bands selected for texture generation")
                 return
 
-            self._image_controller.generate_3d_texture(
-                bands=bands,
-                gamma=self.current_gamma if hasattr(self, 'current_gamma') else 1.0,
-                output_size=(1600, 800),
+            recipe = self._build_recipe_from_bands(bands)
+            self._image_controller.generate_texture_request(
+                recipe.texture_request(output_size=(1600, 800))
             )
         except Exception as e:
             logger.exception(f"3D texture generation failed: {e}")
@@ -1070,7 +1101,6 @@ class MainWindow(QMainWindow):
             return
 
         # Get projection settings
-        proj_id = self.projection_combobox.currentData()
         proj_name = self.projection_combobox.currentText()
 
         output_file = QFileDialog.getSaveFileName(
@@ -1088,11 +1118,9 @@ class MainWindow(QMainWindow):
         # Trigger export task
         self._set_ui_status("loading", f"Exporting to {proj_name}...")
         self.export_info_label.setText("Export: still image running")
-        self._export_controller.export_still(
-            output_path=output_path,
-            bands=bands,
-            gamma=self.current_gamma,
-            projection=proj_id,
+        recipe = self._build_recipe_from_bands(bands)
+        self._export_controller.export_still_request(
+            recipe.still_export_request(output_path)
         )
 
     # ==========================================================================
@@ -1121,11 +1149,16 @@ class MainWindow(QMainWindow):
 
     def _on_frame_loaded(self, index: int, total: int, time_str: str):
         """Slot: TimeSeriesController finished loading a frame."""
-        self.current_frame_index = index
         self._state.current_frame_index = index
         self.time_label.setText(f"{time_str}\n[{index + 1}/{total}]")
         self.frame_info_label.setText(f"Frame: {index + 1}/{total}")
-        self.header_meta_label.setText(f"Current time: {time_str} | total frames: {total}")
+        current_scene = self._state.current_scene
+        if current_scene is not None:
+            self.header_meta_label.setText(
+                f"{self._format_scene_brief(current_scene)} | time: {time_str} | total scenes: {total}"
+            )
+        else:
+            self.header_meta_label.setText(f"Current time: {time_str} | total frames: {total}")
 
         # Update slider position without triggering another load
         self.time_slider.blockSignals(True)
@@ -1144,16 +1177,13 @@ class MainWindow(QMainWindow):
         if not bands:
             return
 
-        proj_id = self.projection_combobox.currentData()
         preview_size = self._get_preview_output_size(max_side=1600)
         need_3d_texture = self.view_tabs.currentIndex() == 1
-        signature = (
+        recipe = self._build_recipe_from_bands(bands)
+        signature = recipe.preview_signature(
             index,
-            tuple(bands),
-            proj_id,
-            round(float(self.current_gamma), 3),
             preview_size,
-            bool(need_3d_texture),
+            need_3d_texture=need_3d_texture,
         )
         if signature == self._last_render_request_signature:
             return

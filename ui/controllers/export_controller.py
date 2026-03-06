@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, List, Optional
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.app_state import AppState
+from core.product_requests import RenderRequest, StillExportRequest, VideoExportRequest
 from utils.workers import VideoExportWorker
 
 if TYPE_CHECKING:
@@ -55,66 +56,55 @@ class ExportController(QObject):
     # Still-image export
     # ------------------------------------------------------------------
 
-    def export_still(self, output_path: str, bands: List[str], gamma: float, projection: str) -> None:
-        """Export current view as PNG or GeoTIFF."""
-        fmt = "geotiff" if output_path.lower().endswith(".tif") else "png"
+    def export_still_request(self, request: StillExportRequest) -> None:
+        """Export current view from a normalized still-export request."""
+        fmt = request.resolved_format()
         self.status.emit(f"Exporting {fmt.upper()}...")
 
         try:
-            result = self._manager.export_image(
-                output_path=output_path,
-                bands=bands,
-                gamma=gamma,
-                proj_name=projection,
-                format=fmt,
-            )
+            result = self._manager.export_render_request(request)
             if result.get("success"):
-                self.export_finished.emit(output_path)
+                self.export_finished.emit(request.output_path)
                 self.status.emit("Export complete.")
             else:
-                raise RuntimeError("export_image() returned unsuccessful result")
+                raise RuntimeError("export_render_request() returned unsuccessful result")
         except Exception as exc:
             msg = f"Export failed: {exc}"
             logger.error(f"[ExportCtrl] {msg}")
             self.export_error.emit(msg)
             self.status.emit("Export failed.")
 
+    def export_still(self, output_path: str, bands: List[str], gamma: float, projection: str) -> None:
+        """Backward-compatible wrapper for still export."""
+        request = StillExportRequest(
+            output_path=output_path,
+            render_request=RenderRequest(
+                bands=tuple(bands),
+                projection=projection,
+                gamma=gamma,
+                quality_profile="export_high",
+            ),
+        )
+        self.export_still_request(request)
+
     # ------------------------------------------------------------------
     # Video export
     # ------------------------------------------------------------------
 
-    def start_video_export(
-        self,
-        output_path: str,
-        bands: List[str],
-        gamma: float,
-        projection: str,
-        fps: int = 10,
-    ) -> bool:
-        """Start background video export for the full time series."""
+    def start_video_export_request(self, request: VideoExportRequest) -> bool:
+        """Start background video export for a normalized export request."""
         if self._vid_worker and self._vid_worker.isRunning():
             logger.warning("[ExportCtrl] Video export already in progress")
             return False
-        if not self._state.file_groups:
+        if self._state.total_frames <= 0:
             self.video_error.emit("No time-series data loaded.")
             return False
 
-        params = {
-            "gamma": gamma,
-            "proj_name": projection,
-            "quality_profile": "default",
-            "resample_method": "bilinear",
-            "driver_type": self._manager.current_driver_type,
-            # Worker will cap to 1920x1080 for balanced-quality export.
-            "output_size": None,
-        }
         worker = VideoExportWorker(
             self._manager,
-            self._state.file_groups,
-            output_path,
-            bands,
-            params,
-            fps=fps,
+            request,
+            file_groups=self._state.file_groups,
+            scenes=self._state.normalized_scenes,
         )
         self._vid_worker = worker
         worker.progress.connect(self.video_progress)
@@ -125,6 +115,30 @@ class ExportController(QObject):
         worker.start()
         self.status.emit("Video export started...")
         return True
+
+    def start_video_export(
+        self,
+        output_path: str,
+        bands: List[str],
+        gamma: float,
+        projection: str,
+        fps: int = 10,
+    ) -> bool:
+        """Backward-compatible wrapper for video export."""
+        request = VideoExportRequest(
+            output_path=output_path,
+            render_request=RenderRequest(
+                bands=tuple(bands),
+                projection=projection,
+                gamma=gamma,
+                quality_profile="default",
+                resample_method="bilinear",
+                output_size=None,
+            ),
+            fps=fps,
+            pinned_driver_type=self._manager.current_driver_type,
+        )
+        return self.start_video_export_request(request)
 
     def cancel_video_export(self) -> None:
         """Request cancellation of an in-progress video export."""

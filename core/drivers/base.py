@@ -9,6 +9,10 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from enum import Enum
 import numpy as np
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.scene import NormalizedScene
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +193,15 @@ class BaseSatelliteDriver(ABC):
             True if loading successful
         """
         pass
+
+    def load_scene(self, scene: "NormalizedScene") -> bool:
+        """
+        Load a normalized scene.
+
+        Subclasses may override this to consume scene metadata directly. The
+        default bridge keeps backward compatibility by delegating to load().
+        """
+        return self.load(scene.file_paths)
 
     @abstractmethod
     def unload(self) -> None:
