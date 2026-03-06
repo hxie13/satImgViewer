@@ -83,11 +83,16 @@ def _configure_logging() -> None:
 def main():
     _configure_logging()
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QIcon
     from ui.main_window import MainWindow
     from ui.style import get_theme_qss
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Himawari Pro Viewer")
+    # Keep title/version out of the UI for software copyright screenshots/materials.
+    app.setApplicationName("satImgViewer")
+    icon_path = Path(__file__).resolve().parent / "ui" / "icon.png"
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     app.setStyleSheet(get_theme_qss("dark"))
 
     window = MainWindow()

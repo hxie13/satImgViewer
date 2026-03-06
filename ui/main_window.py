@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox, QSlider, QTabWidget, QMessageBox, QComboBox,
                              QFrame, QSpinBox)
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence, QIcon
 
 # Core imports
 from core.geo_utils import get_geographic_extent
@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Himawari/FY Satellite Analyst (Pro Edition) v2.0")
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        if os.path.isfile(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        # Keep title/version out of the UI for software copyright screenshots/materials.
+        self.setWindowTitle("多源卫星影像处理与可视化软件")
         self.resize(1400, 900)
 
         # Initialize SatelliteImageManager

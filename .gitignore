@@ -67,7 +67,12 @@ conda-env.yml
 *.png
 *.jpg
 *.jpeg
+!ui/icon.png
 
 # Project directories (local development only)
 tests/
 docs/
+
+# Generated artifacts
+/_tmp_attach*
+soft_copyright/
